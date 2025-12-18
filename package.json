@@ -1,7 +1,7 @@
 {
-  "name": "strava-kudos-standalone",
+  "name": "autokudos-bot",
   "version": "1.0.0",
-  "description": "Standalone Strava Auto-Kudos Bot with Redis Batching",
+  "description": "Strava Auto-Kudos Background Worker",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -13,6 +13,6 @@
     "moment-timezone": "^0.5.43"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=14.0.0"
   }
 }
