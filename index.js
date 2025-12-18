@@ -21,6 +21,7 @@ const START_TIME_KEY = 'strava:queue_start';
 const PROCESSED_KEY = 'strava:processed';
 let lastPollTime = Date.now();
 
+// --- AUTH LOGIC ---
 async function getAccessToken() {
     try {
         const res = await axios.post('https://www.strava.com/api/v3/oauth/token', {
@@ -30,10 +31,12 @@ async function getAccessToken() {
             grant_type: 'refresh_token'
         });
         return res.data.access_token;
-    } catch (e) { return null; }
+    } catch (e) {
+        return null;
+    }
 }
 
-// --- ROUTES ---
+// --- LOGIN ROUTES ---
 app.get('/login', (req, res) => {
     const client_id = process.env.STRAVA_CLIENT_ID;
     const redirect = `https://autokudos.onrender.com/token-callback`;
@@ -53,6 +56,7 @@ app.get('/token-callback', async (req, res) => {
     } catch (e) { res.send(`Error: ${e.message}`); }
 });
 
+// --- CORE LOGIC ---
 app.post('/webhook', async (req, res) => {
     res.status(200).send('RECEIVED');
     const { object_type, aspect_type, object_id, owner_id } = req.body;
@@ -104,37 +108,54 @@ async function fireKudos() {
 app.post('/trawl', async (req, res) => { await poll(); res.redirect('/stats'); });
 app.post('/fire', async (req, res) => { await fireKudos(); res.redirect('/stats'); });
 
-// --- DASHBOARD WITH CHECKS ---
+// --- DASHBOARD ---
 app.get('/stats', async (req, res) => {
+    // 1. Get Data from Redis
     const total = await redis.get('stats:total_sent') || 0;
     const qCount = await redis.scard(QUEUE_KEY);
     const lastF = await redis.get('stats:last_fired_at');
     const nextP = Math.max(0, (lastPollTime + POLL_INTERVAL_MS) - Date.now());
     const lastFmt = lastF ? moment(parseInt(lastF)).tz(MY_TZ).format('HH:mm:ss') : "None";
 
-    // Connection Checks
-    const redisStatus = redis.status === 'ready' ? 'Connected' : 'Error';
-    const tokenCheck = await getAccessToken();
-    const stravaStatus = tokenCheck ? 'Connected' : 'Offline/Unauthorized';
+    // 2. Perform Connection Checks
+    let upstashStatus = "Error";
+    try {
+        await redis.ping();
+        upstashStatus = "Connected";
+    } catch (e) { upstashStatus = "Offline"; }
 
-    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;background:#121212;color:white;text-align:center;padding:20px;}.card{background:#1e1e1e;padding:15px;border-radius:12px;border:1px solid #333;margin:10px;display:inline-block;min-width:120px;}.value{font-size:24px;color:#fc4c02;font-weight:bold;}button{background:transparent;color:#fc4c02;border:1px solid #fc4c02;padding:8px;cursor:pointer;border-radius:5px;font-size:12px;}.status{font-size:10px;margin-bottom:20px;}</style><meta http-equiv="refresh" content="30"></head><body>
-        <h2 style="color:#fc4c02;">🧡 AutoKudos</h2>
-        <div class="status">
-            Strava: <span style="color:${stravaStatus === 'Connected' ? '#00ff00' : '#ff0000'}">${stravaStatus}</span> | 
-            Upstash: <span style="color:${redisStatus === 'Connected' ? '#00ff00' : '#ff0000'}">${redisStatus}</span>
+    const tokenCheck = await getAccessToken();
+    const stravaStatus = tokenCheck ? "Connected" : "Disconnected";
+
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;background:#121212;color:white;text-align:center;padding:20px;}.card{background:#1e1e1e;padding:15px;border-radius:12px;border:1px solid #333;margin:10px;display:inline-block;min-width:120px;}.value{font-size:24px;color:#fc4c02;font-weight:bold;}button{background:transparent;color:#fc4c02;border:1px solid #fc4c02;padding:8px;cursor:pointer;border-radius:5px;font-size:12px;}.status-dot{height:8px;width:8px;border-radius:50%;display:inline-block;margin-right:5px;}</style><meta http-equiv="refresh" content="30"></head><body>
+        <h2 style="color:#fc4c02;margin-bottom:5px;">🧡 AutoKudos</h2>
+        <div style="font-size:10px;color:#888;margin-bottom:20px;">
+            <span class="status-dot" style="background:${stravaStatus === 'Connected' ? '#00ff00' : '#ff0000'}"></span> Strava: ${stravaStatus} | 
+            <span class="status-dot" style="background:${upstashStatus === 'Connected' ? '#00ff00' : '#ff0000'}"></span> Upstash: ${upstashStatus}
         </div>
         <div>
             <div class="card">SENT<div class="value">${total}</div></div>
             <div class="card">QUEUE<div class="value">${qCount}</div></div>
         </div>
         <div style="max-width:400px;margin:20px auto;text-align:left;background:#1e1e1e;padding:20px;border-radius:12px;">
-            <div style="display:flex;justify-content:space-between;"><span>Trawl: ${Math.floor(nextP/60000)}m</span><form action="/trawl" method="POST"><button>TRAWL</button></form></div>
-            <hr style="border:#333 1px solid;">
-            <div style="display:flex;justify-content:space-between;"><span>Last: ${lastFmt}</span><form action="/fire" method="POST"><button>FIRE</button></form></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span>Trawl: ${Math.floor(nextP/60000)}m ${Math.floor((nextP%60000)/1000)}s</span>
+                <form action="/trawl" method="POST"><button>TRAWL NOW</button></form>
+            </div>
+            <hr style="border:#333 1px solid;margin:15px 0;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span>Last Batch: ${lastFmt}</span>
+                <form action="/fire" method="POST"><button>FIRE QUEUE</button></form>
+            </div>
         </div>
+        <p style="font-size:10px;color:#444;">Bot is awake 06:00 - 23:00 UK</p>
     </body></html>`);
 });
 
+// --- TIMERS ---
 setInterval(poll, POLL_INTERVAL_MS);
-setInterval(() => axios.get(`https://autokudos.onrender.com/stats`).catch(()=>{}), 10*60*1000);
-app.listen(process.env.PORT || 3000);
+setInterval(() => {
+    axios.get(`https://autokudos.onrender.com/stats`).catch(() => {});
+}, 10 * 60 * 1000);
+
+app.listen(process.env.PORT || 3000, () => console.log("AutoKudos Online"));
