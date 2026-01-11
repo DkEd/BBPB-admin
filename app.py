@@ -8,18 +8,18 @@ from datetime import datetime, date
 # --- CONFIG & CONNECTION ---
 st.set_page_config(page_title="Club Leaderboard", layout="wide")
 
+# Connect to Upstash Redis
 redis_url = os.environ.get("REDIS_URL")
 try:
     r = redis.from_url(redis_url, decode_responses=True)
-except:
-    st.error("Redis Connection Failed")
+except Exception as e:
+    st.error(f"Redis Connection Failed: {e}")
 
-# --- PASSWORD LOGIC ---
+# --- HELPER FUNCTIONS ---
 def get_admin_password():
     stored_pwd = r.get("admin_password")
     return stored_pwd if stored_pwd else "admin123"
 
-# --- CORE LOGIC ---
 def get_category(dob_str, race_date_str):
     try:
         dob = datetime.strptime(dob_str, '%Y-%m-%d')
@@ -30,14 +30,16 @@ def get_category(dob_str, race_date_str):
         if age < 60: return "V50"
         if age < 70: return "V60"
         return "V70"
-    except: return "Unknown"
+    except:
+        return "Unknown"
 
 def time_to_seconds(t_str):
     try:
         parts = list(map(int, t_str.split(':')))
         if len(parts) == 3: return parts[0] * 3600 + parts[1] * 60 + parts[2]
         if len(parts) == 2: return parts[0] * 60 + parts[1]
-    except: return None
+    except:
+        return None
 
 # --- SIDEBAR ADMIN ---
 with st.sidebar:
@@ -49,11 +51,12 @@ with st.sidebar:
     if is_admin:
         st.success("Admin Access Granted")
         st.divider()
-        new_pwd = st.text_input("New Password", type="password")
-        if st.button("Update Password"):
+        st.subheader("Settings")
+        new_pwd = st.text_input("Update Password", type="password")
+        if st.button("Save New Password"):
             if new_pwd:
                 r.set("admin_password", new_pwd)
-                st.success("Updated!")
+                st.success("Password Updated!")
                 st.rerun()
     else:
         st.warning("Enter password to manage data")
@@ -65,20 +68,20 @@ tab1, tab2, tab3, tab4 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 
 
 # --- TAB 1: LEADERBOARD ---
 with tab1:
-    view = st.radio("Display Filter:", ["All-Time Records", "2026 Season Only"], horizontal=True)
+    current_year = datetime.now().year
+    years = ["All-Time"] + [str(y) for y in range(2023, current_year + 1)]
+    selected_year = st.selectbox("Select Season:", years, index=0)
+    
     raw_results = r.lrange("race_results", 0, -1)
     
     if raw_results:
         df = pd.DataFrame([json.loads(res) for res in raw_results])
-        
-        # Ensure date format is correct for filtering
         df['race_date_dt'] = pd.to_datetime(df['race_date'])
         
-        if view == "2026 Season Only":
-            df = df[df['race_date_dt'].dt.year == 2026]
+        if selected_year != "All-Time":
+            df = df[df['race_date_dt'].dt.year == int(selected_year)]
         
         if not df.empty:
-            # FIXED: Safe Category Assignment
             df['Category'] = df.apply(lambda x: get_category(x['dob'], x['race_date']), axis=1)
             cat_order = ["Senior", "V40", "V50", "V60", "V70"]
             
@@ -98,9 +101,9 @@ with tab1:
                             res_table.columns = ['Cat', 'Runner', 'Time', 'Location', 'Date']
                             st.table(res_table.set_index('Cat'))
                         else:
-                            st.caption("No records yet")
+                            st.caption(f"No {gen} records found.")
         else:
-            st.info("No results found for the 2026 season.")
+            st.info(f"No results found for {selected_year}.")
     else:
         st.info("The database is currently empty.")
 
@@ -140,17 +143,54 @@ with tab3:
                     r.delete("members")
                     if updated: r.rpush("members", *updated)
                     st.rerun()
-    else: st.error("Admin login required.")
+    else:
+        st.error("Admin login required.")
 
-# --- TAB 4: ADMIN TOOLS ---
+# --- TAB 4: ADMIN TOOLS (Manual & Bulk) ---
 with tab4:
     if is_admin:
-        st.header("Log Result")
-        members = [json.loads(m) for m in r.lrange("members", 0, -1)]
-        if members:
+        st.header("Bulk Import (CSV)")
+        col_m, col_r = st.columns(2)
+        
+        with col_m:
+            st.subheader("Import Members")
+            st.caption("Headers: name, gender, dob (YYYY-MM-DD)")
+            m_file = st.file_uploader("Upload Members CSV", type="csv")
+            if m_file:
+                m_df = pd.read_csv(m_file)
+                if st.button("Confirm Member Import"):
+                    for _, row in m_df.iterrows():
+                        r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
+                    st.success("Members imported!")
+                    st.rerun()
+
+        with col_r:
+            st.subheader("Import Results")
+            st.caption("Headers: name, distance, time_display, location, race_date")
+            r_file = st.file_uploader("Upload Results CSV", type="csv")
+            if r_file:
+                r_df = pd.read_csv(r_file)
+                if st.button("Confirm Results Import"):
+                    members_raw = r.lrange("members", 0, -1)
+                    m_lookup = {json.loads(m)['name']: json.loads(m) for m in members_raw}
+                    for _, row in r_df.iterrows():
+                        name = str(row['name'])
+                        if name in m_lookup:
+                            m_info = m_lookup[name]
+                            secs = time_to_seconds(str(row['time_display']))
+                            entry = {"name": name, "gender": m_info['gender'], "dob": m_info['dob'], "distance": str(row['distance']), "time_seconds": secs, "time_display": str(row['time_display']), "location": str(row['location']), "race_date": str(row['race_date'])}
+                            r.rpush("race_results", json.dumps(entry))
+                    st.success("Results imported!")
+                    st.rerun()
+
+        st.divider()
+        st.header("Manual Result Logging")
+        m_raw = r.lrange("members", 0, -1)
+        if m_raw:
+            m_list = [json.loads(m) for m in m_raw]
             with st.form("race_form", clear_on_submit=True):
-                n_sel = st.selectbox("Runner", sorted([m['name'] for m in members]))
-                m_info = next(i for i in members if i["name"] == n_sel)
+                n_sel = st.selectbox("Runner", sorted([m['name'] for m in m_list]))
+                m_info = next(i for i in m_list if i["name"] == n_sel)
                 dist = st.selectbox("Distance", ["5k", "10k", "10 Mile", "HM", "Marathon"])
                 t_str = st.text_input("Time (HH:MM:SS)")
                 loc = st.text_input("Location")
@@ -158,9 +198,7 @@ with tab4:
                 if st.form_submit_button("Submit"):
                     secs = time_to_seconds(t_str)
                     if secs:
-                        entry = {"name": n_sel, "gender": m_info['gender'], "dob": m_info['dob'], 
-                                 "distance": dist, "time_seconds": secs, "time_display": t_str, 
-                                 "location": loc, "race_date": str(dt)}
+                        entry = {"name": n_sel, "gender": m_info['gender'], "dob": m_info['dob'], "distance": dist, "time_seconds": secs, "time_display": t_str, "location": loc, "race_date": str(dt)}
                         r.rpush("race_results", json.dumps(entry))
                         st.success("Saved!")
                         st.rerun()
@@ -177,4 +215,5 @@ with tab4:
                 r.delete("race_results")
                 if res_list: r.rpush("race_results", *[json.dumps(res) for res in res_list])
                 st.rerun()
-    else: st.error("Admin login required.")
+    else:
+        st.error("Admin login required.")
