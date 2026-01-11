@@ -5,14 +5,14 @@ import json
 import os
 from datetime import datetime
 
-# --- SECURE UPSTASH CONNECTION ---
-r = redis.Redis(
-    host=os.environ.get("REDIS_HOST"),
-    port=os.environ.get("REDIS_PORT"),
-    password=os.environ.get("REDIS_PASSWORD"),
-    ssl=True,
-    decode_responses=True
-)
+# --- SECURE UPSTASH CONNECTION VIA URL ---
+# In Render, name your variable: REDIS_URL
+redis_url = os.environ.get("REDIS_URL")
+
+try:
+    r = redis.from_url(redis_url, decode_responses=True)
+except Exception as e:
+    st.error("Could not connect to Redis. Check your Environment Variables.")
 
 # --- CATEGORY LOGIC (Race Date - DOB) ---
 def get_category(dob_str, race_date_str):
@@ -72,10 +72,11 @@ with tab1:
 # --- TAB 2: ADD RESULT ---
 with tab2:
     st.header("Log a Race Result")
-    members = [json.loads(m) for m in r.lrange("members", 0, -1)]
+    members_raw = r.lrange("members", 0, -1)
+    members = [json.loads(m) for m in members_raw]
     if members:
         with st.form("race_form", clear_on_submit=True):
-            name_sel = st.selectbox("Select Runner", [m['name'] for m in members])
+            name_sel = st.selectbox("Select Runner", sorted([m['name'] for m in members]))
             m_info = next(i for i in members if i["name"] == name_sel)
             dist = st.selectbox("Distance", ["5k", "10k", "10 Mile", "HM", "Marathon"])
             t_str = st.text_input("Time (HH:MM:SS)", "00:00:00")
