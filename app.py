@@ -39,10 +39,13 @@ def time_to_seconds(t_str):
         if len(parts) == 2: return parts[0] * 60 + parts[1]
     except: return None
 
+def is_time_realistic(dist, secs):
+    limits = {"5k": 720, "10k": 1560, "10 Mile": 2700, "HM": 3480, "Marathon": 7200}
+    return secs >= limits.get(dist, 0)
+
 # --- HEADER & LOGO ---
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
-    # This points to the image URL you provided
     logo_url = "https://scontent-lhr6-2.xx.fbcdn.net/v/t39.30808-6/613136946_122094772515215234_2783950400659519915_n.jpg?_nc_cat=105&ccb=1-7&_nc_sid=cc71e4&_nc_ohc=kvHoy9QIOF4Q7kNvwGRAj6K&_nc_oc=Adm0NLaoEHZoixq2SnIjN_KH-Zfwbqu11R1pz8aAV3sMB2Ru2wRsi3H4j7cerOPAUmGOmUh3Q6dC7TWGA82mWYDi&_nc_zt=23&_nc_ht=scontent-lhr6-2.xx&_nc_gid=5GS-5P76DuiR2umpX-xI5w&oh=00_AfquWT54_DxkPrvTyRnSk2y3a3tBuCxJBvkLCS8rd7ANlg&oe=696A8E3D"
     st.image(logo_url, width=120)
 with col_title:
@@ -68,7 +71,7 @@ with st.sidebar:
 # --- MAIN UI ---
 tab1, tab2, tab3, tab4 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Admin"])
 
-# --- TAB 1: CLUB THEMED LEADERBOARD ---
+# --- TAB 1: LEADERBOARD ---
 with tab1:
     current_year = datetime.now().year
     years = ["All-Time"] + [str(y) for y in range(2023, current_year + 1)]
@@ -91,55 +94,29 @@ with tab1:
             for d in ["5k", "10k", "10 Mile", "HM", "Marathon"]:
                 st.markdown(f"### 🏁 {d} Records - {selected_year}")
                 m_col, f_col = st.columns(2)
-                
                 for gen, col in [("Male", m_col), ("Female", f_col)]:
                     with col:
-                        header_bg = "#003366" if gen == "Male" else "#FFD700"
-                        text_color = "white" if gen == "Male" else "#003366"
-                        
-                        st.markdown(f'''
-                            <div style="background-color: {header_bg}; padding: 10px; border-radius: 8px 8px 0px 0px; 
-                                        color: {text_color}; text-align: center; font-weight: 800; 
-                                        border: 2px solid #003366;">
-                                {gen.upper()}
-                            </div>
-                        ''', unsafe_allow_html=True)
-                        
+                        header_bg, text_color = ("#003366", "white") if gen == "Male" else ("#FFD700", "#003366")
+                        st.markdown(f'<div style="background-color: {header_bg}; padding: 10px; border-radius: 8px 8px 0px 0px; color: {text_color}; text-align: center; font-weight: 800; border: 2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
                         subset = df[(df['distance'] == d) & (df['gender'] == gen)]
                         if not subset.empty:
                             leaders = subset.sort_values('time_seconds').groupby('Category', observed=True).head(1)
                             leaders['Category'] = pd.Categorical(leaders['Category'], categories=cat_order, ordered=True)
-                            
                             for _, row in leaders.sort_values('Category').iterrows():
-                                st.markdown(f'''
-                                    <div style="border: 2px solid #003366; border-top: none; padding: 12px; 
-                                                background-color: white; margin-bottom: -2px; display: flex; 
-                                                justify-content: space-between; align-items: center;">
-                                        <div style="line-height: 1.2;">
-                                            <span style="background-color: #FFD700; color: #003366; padding: 2px 6px; 
-                                                         border-radius: 4px; font-weight: bold; font-size: 0.75em; margin-right: 8px;">
-                                                {row['Category']}
-                                            </span>
-                                            <span style="font-weight: 600; color: #003366; font-size: 1.05em;">{row['name']}</span><br>
-                                            <span style="font-size: 0.75em; color: #666;">{row['location']} | {row['race_date']}</span>
-                                        </div>
-                                        <div style="font-weight: 800; color: #003366; font-size: 1.2em; border-left: 2px solid #FFD700; padding-left: 10px;">
-                                            {row['time_display']}
-                                        </div>
-                                    </div>
-                                ''', unsafe_allow_html=True)
-                        else:
-                            st.markdown('<div style="border: 2px solid #003366; border-top: none; padding: 10px; text-align: center; color: #999; font-style: italic; font-size: 0.8em;">No records recorded</div>', unsafe_allow_html=True)
+                                st.markdown(f'''<div style="border: 2px solid #003366; border-top: none; padding: 12px; background-color: white; margin-bottom: -2px; display: flex; justify-content: space-between; align-items: center;"><div style="line-height: 1.2;"><span style="background-color: #FFD700; color: #003366; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.75em; margin-right: 8px;">{row['Category']}</span><span style="font-weight: 600; color: #003366; font-size: 1.05em;">{row['name']}</span><br><span style="font-size: 0.75em; color: #666;">{row['location']} | {row['race_date']}</span></div><div style="font-weight: 800; color: #003366; font-size: 1.2em; border-left: 2px solid #FFD700; padding-left: 10px;">{row['time_display']}</div></div>''', unsafe_allow_html=True)
+                        else: st.markdown('<div style="border: 2px solid #003366; border-top: none; padding: 10px; text-align: center; color: #999; font-style: italic; font-size: 0.8em;">No records recorded</div>', unsafe_allow_html=True)
                 st.markdown("<br>", unsafe_allow_html=True)
     else: st.info("Database is empty.")
 
-# --- OTHER TABS (Condensed for brevity, same logic as before) ---
+# --- TAB 2: ACTIVITY FEED ---
 with tab2:
     st.header("Recent Race Activity")
+    raw_results = r.lrange("race_results", 0, -1)
     if raw_results:
         all_df = pd.DataFrame([json.loads(res) for res in raw_results]).sort_values('race_date', ascending=False)
         st.dataframe(all_df[['race_date', 'name', 'distance', 'time_display', 'location']], use_container_width=True, hide_index=True)
 
+# --- TAB 3: MEMBER MANAGEMENT ---
 with tab3:
     if is_admin:
         col1, col2 = st.columns(2)
@@ -158,28 +135,58 @@ with tab3:
             if m_raw:
                 m_list = [json.loads(m) for m in m_raw]
                 st.dataframe(pd.DataFrame(m_list).sort_values('name'), use_container_width=True, hide_index=True)
+                m_del = st.selectbox("Select to Delete", [m['name'] for m in m_list])
+                if st.button("Delete Selected Member"):
+                    updated = [json.dumps(m) for m in m_list if m['name'] != m_del]
+                    r.delete("members")
+                    if updated: r.rpush("members", *updated)
+                    st.rerun()
+    else: st.error("Admin Login Required")
 
+# --- TAB 4: ADMIN TOOLS (Validator & Maintenance) ---
 with tab4:
     if is_admin:
-        st.header("Bulk Import")
-        m_file = st.file_uploader("Upload Members CSV", type="csv")
-        if m_file and st.button("Import Members"):
-            m_df = pd.read_csv(m_file)
-            for _, row in m_df.iterrows():
-                r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
-            st.success("Members Added!")
-            
-        r_file = st.file_uploader("Upload Results CSV", type="csv")
-        if r_file and st.button("Import Results"):
-            r_df = pd.read_csv(r_file)
-            m_lookup = {json.loads(m)['name']: json.loads(m) for m in r.lrange("members", 0, -1)}
-            for _, row in r_df.iterrows():
-                if str(row['name']) in m_lookup:
-                    m = m_lookup[str(row['name'])]
-                    entry = {"name": str(row['name']), "gender": m['gender'], "dob": m['dob'], 
-                             "distance": str(row['distance']), "time_seconds": time_to_seconds(str(row['time_display'])), 
-                             "time_display": str(row['time_display']), "location": str(row['location']), "race_date": str(row['race_date'])}
-                    r.rpush("race_results", json.dumps(entry))
-            st.success("Results Added!")
-            st.rerun()
-    else: st.error("Admin login required.")
+        st.header("🛠️ Bulk Data Management")
+        col_m, col_r = st.columns(2)
+        with col_m:
+            st.subheader("1. Import Members")
+            m_file = st.file_uploader("Upload Members CSV", type="csv")
+            if m_file and st.button("🚀 Confirm Member Import"):
+                m_df = pd.read_csv(m_file)
+                for _, row in m_df.iterrows():
+                    r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
+                st.success("Imported!")
+                st.rerun()
+        with col_r:
+            st.subheader("2. Import Results (With Validation)")
+            r_file = st.file_uploader("Upload Results CSV", type="csv")
+            if r_file:
+                r_df = pd.read_csv(r_file)
+                m_lookup = {json.loads(m)['name']: json.loads(m) for m in r.lrange("members", 0, -1)}
+                errors = []
+                for i, row in r_df.iterrows():
+                    if str(row['name']) not in m_lookup: errors.append(f"Row {i+2}: Member '{row['name']}' not found.")
+                if errors:
+                    st.error("Validation Failed")
+                    for e in errors[:5]: st.write(f"- {e}")
+                elif st.button("💾 Save Results"):
+                    for _, row in r_df.iterrows():
+                        m = m_lookup[str(row['name'])]
+                        entry = {"name": str(row['name']), "gender": m['gender'], "dob": m['dob'], "distance": str(row['distance']), "time_seconds": time_to_seconds(str(row['time_display'])), "time_display": str(row['time_display']), "location": str(row['location']), "race_date": str(row['race_date'])}
+                        r.rpush("race_results", json.dumps(entry))
+                    st.success("Results Updated!")
+                    st.rerun()
+
+        st.divider()
+        st.subheader("📊 Maintenance")
+        c1, c2 = st.columns(2)
+        with c1:
+            if raw_results:
+                csv_data = pd.DataFrame([json.loads(res) for res in raw_results]).to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Database Backup", data=csv_data, file_name=f"club_backup_{date.today()}.csv")
+        with c2:
+            if st.button("🗑️ Wipe All Results"):
+                r.delete("race_results")
+                st.success("Records cleared.")
+                st.rerun()
+    else: st.error("Admin Login Required")
