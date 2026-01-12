@@ -8,7 +8,6 @@ from datetime import datetime, date
 # --- CONFIG & CONNECTION ---
 st.set_page_config(page_title="Club Leaderboard", layout="wide")
 
-# Connect to Upstash Redis
 redis_url = os.environ.get("REDIS_URL")
 try:
     r = redis.from_url(redis_url, decode_responses=True)
@@ -30,19 +29,16 @@ def get_category(dob_str, race_date_str):
         if age < 60: return "V50"
         if age < 70: return "V60"
         return "V70"
-    except:
-        return "Unknown"
+    except: return "Unknown"
 
 def time_to_seconds(t_str):
     try:
         parts = list(map(int, t_str.split(':')))
         if len(parts) == 3: return parts[0] * 3600 + parts[1] * 60 + parts[2]
         if len(parts) == 2: return parts[0] * 60 + parts[1]
-    except:
-        return None
+    except: return None
 
 def is_time_realistic(dist, secs):
-    # Minimum possible seconds for each distance (World Record Buffer)
     limits = {"5k": 720, "10k": 1560, "10 Mile": 2700, "HM": 3480, "Marathon": 7200}
     return secs >= limits.get(dist, 0)
 
@@ -70,7 +66,7 @@ st.title("🏃‍♂️ Club Records")
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Admin"])
 
-# --- TAB 1: LEADERBOARD (Visual Version) ---
+# --- TAB 1: LEADERBOARD ---
 with tab1:
     current_year = datetime.now().year
     years = ["All-Time"] + [str(y) for y in range(2023, current_year + 1)]
@@ -95,13 +91,21 @@ with tab1:
                 m_col, f_col = st.columns(2)
                 for gen, col in [("Male", m_col), ("Female", f_col)]:
                     with col:
-                        st.markdown(f'<div style="background-color: {"#2e5a88" if gen == "Male" else "#a64d79"}; padding: 8px; border-radius: 5px; color: white; text-align: center; font-weight: bold; margin-bottom: 10px;">{gen.upper()}</div>', unsafe_allowed_html=True)
+                        bg_color = "#2e5a88" if gen == "Male" else "#a64d79"
+                        st.markdown(f'<div style="background-color: {bg_color}; padding: 8px; border-radius: 5px; color: white; text-align: center; font-weight: bold; margin-bottom: 10px;">{gen.upper()}</div>', unsafe_allow_html=True)
+                        
                         subset = df[(df['distance'] == d) & (df['gender'] == gen)]
                         if not subset.empty:
                             leaders = subset.sort_values('time_seconds').groupby('Category', observed=True).head(1)
                             leaders['Category'] = pd.Categorical(leaders['Category'], categories=cat_order, ordered=True)
                             for _, row in leaders.sort_values('Category').iterrows():
-                                st.markdown(f"""<div style="border: 1px solid #ddd; padding: 10px; border-radius: 8px; margin-bottom: 5px; background-color: #f9f9f9;"><span style="font-weight: bold; color: #555;">{row['Category']}:</span> <span style="font-size: 1.1em;">{row['name']}</span><div style="float: right; font-weight: bold; color: #d35400;">{row['time_display']}</div><div style="font-size: 0.8em; color: #888;">{row['location']} | {row['race_date']}</div></div>""", unsafe_allowed_html=True)
+                                st.markdown(f"""
+                                <div style="border: 1px solid #ddd; padding: 10px; border-radius: 8px; margin-bottom: 5px; background-color: #f9f9f9;">
+                                    <span style="font-weight: bold; color: #555;">{row['Category']}:</span> 
+                                    <span style="font-size: 1.1em;">{row['name']}</span>
+                                    <div style="float: right; font-weight: bold; color: #d35400;">{row['time_display']}</div>
+                                    <div style="font-size: 0.8em; color: #888;">{row['location']} | {row['race_date']}</div>
+                                </div>""", unsafe_allow_html=True)
                         else: st.caption(f"No {gen} records recorded.")
         else: st.info(f"No results found for {selected_year}.")
     else: st.info("Database is empty.")
@@ -144,7 +148,7 @@ with tab3:
                     st.rerun()
     else: st.error("Admin login required.")
 
-# --- TAB 4: ADMIN TOOLS (Validation & Bulk) ---
+# --- TAB 4: ADMIN TOOLS ---
 with tab4:
     if is_admin:
         st.header("Bulk Import & Export")
@@ -157,6 +161,7 @@ with tab4:
                 for _, row in m_df.iterrows():
                     r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
                 st.success("Imported!")
+                st.rerun()
         with col_r:
             st.subheader("Backup Data")
             if raw_results:
