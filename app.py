@@ -41,6 +41,11 @@ def time_to_seconds(t_str):
     except:
         return None
 
+def is_time_realistic(dist, secs):
+    # Minimum possible seconds for each distance (World Record Buffer)
+    limits = {"5k": 720, "10k": 1560, "10 Mile": 2700, "HM": 3480, "Marathon": 7200}
+    return secs >= limits.get(dist, 0)
+
 # --- SIDEBAR ADMIN ---
 with st.sidebar:
     st.title("🔐 Admin Login")
@@ -51,7 +56,6 @@ with st.sidebar:
     if is_admin:
         st.success("Admin Access Granted")
         st.divider()
-        st.subheader("Settings")
         new_pwd = st.text_input("Update Password", type="password")
         if st.button("Save New Password"):
             if new_pwd:
@@ -66,14 +70,15 @@ st.title("🏃‍♂️ Club Records")
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Admin"])
 
-# --- TAB 1: LEADERBOARD ---
+# --- TAB 1: LEADERBOARD (Visual Version) ---
 with tab1:
     current_year = datetime.now().year
     years = ["All-Time"] + [str(y) for y in range(2023, current_year + 1)]
-    selected_year = st.selectbox("Select Season:", years, index=0)
+    col_filter, _ = st.columns([1, 2])
+    with col_filter:
+        selected_year = st.selectbox("📅 Select Season:", years, index=0)
     
     raw_results = r.lrange("race_results", 0, -1)
-    
     if raw_results:
         df = pd.DataFrame([json.loads(res) for res in raw_results])
         df['race_date_dt'] = pd.to_datetime(df['race_date'])
@@ -86,26 +91,20 @@ with tab1:
             cat_order = ["Senior", "V40", "V50", "V60", "V70"]
             
             for d in ["5k", "10k", "10 Mile", "HM", "Marathon"]:
-                st.markdown(f"## {d}")
+                st.markdown(f"### 🏁 {d} Records - {selected_year}")
                 m_col, f_col = st.columns(2)
-                
                 for gen, col in [("Male", m_col), ("Female", f_col)]:
                     with col:
-                        st.markdown(f"**{gen}**")
+                        st.markdown(f'<div style="background-color: {"#2e5a88" if gen == "Male" else "#a64d79"}; padding: 8px; border-radius: 5px; color: white; text-align: center; font-weight: bold; margin-bottom: 10px;">{gen.upper()}</div>', unsafe_allowed_html=True)
                         subset = df[(df['distance'] == d) & (df['gender'] == gen)]
-                        
                         if not subset.empty:
                             leaders = subset.sort_values('time_seconds').groupby('Category', observed=True).head(1)
                             leaders['Category'] = pd.Categorical(leaders['Category'], categories=cat_order, ordered=True)
-                            res_table = leaders.sort_values('Category')[['Category', 'name', 'time_display', 'location', 'race_date']]
-                            res_table.columns = ['Cat', 'Runner', 'Time', 'Location', 'Date']
-                            st.table(res_table.set_index('Cat'))
-                        else:
-                            st.caption(f"No {gen} records found.")
-        else:
-            st.info(f"No results found for {selected_year}.")
-    else:
-        st.info("The database is currently empty.")
+                            for _, row in leaders.sort_values('Category').iterrows():
+                                st.markdown(f"""<div style="border: 1px solid #ddd; padding: 10px; border-radius: 8px; margin-bottom: 5px; background-color: #f9f9f9;"><span style="font-weight: bold; color: #555;">{row['Category']}:</span> <span style="font-size: 1.1em;">{row['name']}</span><div style="float: right; font-weight: bold; color: #d35400;">{row['time_display']}</div><div style="font-size: 0.8em; color: #888;">{row['location']} | {row['race_date']}</div></div>""", unsafe_allowed_html=True)
+                        else: st.caption(f"No {gen} records recorded.")
+        else: st.info(f"No results found for {selected_year}.")
+    else: st.info("Database is empty.")
 
 # --- TAB 2: ACTIVITY FEED ---
 with tab2:
@@ -143,48 +142,29 @@ with tab3:
                     r.delete("members")
                     if updated: r.rpush("members", *updated)
                     st.rerun()
-    else:
-        st.error("Admin login required.")
+    else: st.error("Admin login required.")
 
-# --- TAB 4: ADMIN TOOLS (Manual & Bulk) ---
+# --- TAB 4: ADMIN TOOLS (Validation & Bulk) ---
 with tab4:
     if is_admin:
-        st.header("Bulk Import (CSV)")
+        st.header("Bulk Import & Export")
         col_m, col_r = st.columns(2)
-        
         with col_m:
-            st.subheader("Import Members")
-            st.caption("Headers: name, gender, dob (YYYY-MM-DD)")
-            m_file = st.file_uploader("Upload Members CSV", type="csv")
-            if m_file:
+            st.subheader("Import Members (CSV)")
+            m_file = st.file_uploader("Upload Members", type="csv")
+            if m_file and st.button("Confirm Member Import"):
                 m_df = pd.read_csv(m_file)
-                if st.button("Confirm Member Import"):
-                    for _, row in m_df.iterrows():
-                        r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
-                    st.success("Members imported!")
-                    st.rerun()
-
+                for _, row in m_df.iterrows():
+                    r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
+                st.success("Imported!")
         with col_r:
-            st.subheader("Import Results")
-            st.caption("Headers: name, distance, time_display, location, race_date")
-            r_file = st.file_uploader("Upload Results CSV", type="csv")
-            if r_file:
-                r_df = pd.read_csv(r_file)
-                if st.button("Confirm Results Import"):
-                    members_raw = r.lrange("members", 0, -1)
-                    m_lookup = {json.loads(m)['name']: json.loads(m) for m in members_raw}
-                    for _, row in r_df.iterrows():
-                        name = str(row['name'])
-                        if name in m_lookup:
-                            m_info = m_lookup[name]
-                            secs = time_to_seconds(str(row['time_display']))
-                            entry = {"name": name, "gender": m_info['gender'], "dob": m_info['dob'], "distance": str(row['distance']), "time_seconds": secs, "time_display": str(row['time_display']), "location": str(row['location']), "race_date": str(row['race_date'])}
-                            r.rpush("race_results", json.dumps(entry))
-                    st.success("Results imported!")
-                    st.rerun()
+            st.subheader("Backup Data")
+            if raw_results:
+                csv = pd.DataFrame([json.loads(res) for res in raw_results]).to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download Results CSV", data=csv, file_name=f"records_backup_{date.today()}.csv", mime='text/csv')
 
         st.divider()
-        st.header("Manual Result Logging")
+        st.header("Log Result")
         m_raw = r.lrange("members", 0, -1)
         if m_raw:
             m_list = [json.loads(m) for m in m_raw]
@@ -198,22 +178,26 @@ with tab4:
                 if st.form_submit_button("Submit"):
                     secs = time_to_seconds(t_str)
                     if secs:
-                        entry = {"name": n_sel, "gender": m_info['gender'], "dob": m_info['dob'], "distance": dist, "time_seconds": secs, "time_display": t_str, "location": loc, "race_date": str(dt)}
-                        r.rpush("race_results", json.dumps(entry))
-                        st.success("Saved!")
-                        st.rerun()
-        
+                        if not is_time_realistic(dist, secs):
+                            st.error("⚠️ Time too fast. Check format (HH:MM:SS).")
+                        elif dt < datetime.strptime(m_info['dob'], '%Y-%m-%d').date():
+                            st.error("⚠️ Race date cannot be before DOB.")
+                        else:
+                            entry = {"name": n_sel, "gender": m_info['gender'], "dob": m_info['dob'], "distance": dist, "time_seconds": secs, "time_display": t_str, "location": loc, "race_date": str(dt)}
+                            r.rpush("race_results", json.dumps(entry))
+                            st.success("Saved!")
+                            st.rerun()
+
         st.divider()
-        st.subheader("Delete Results")
+        st.subheader("Cleanup Results")
         if raw_results:
             res_list = [json.loads(res) for res in raw_results]
             res_labels = [f"{res['race_date']} - {res['name']} ({res['distance']})" for res in res_list]
-            to_del = st.selectbox("Select Result", res_labels)
-            if st.button("Remove Result"):
+            to_del = st.selectbox("Select Result to Delete", res_labels)
+            if st.button("Confirm Delete Result"):
                 idx = res_labels.index(to_del)
                 res_list.pop(idx)
                 r.delete("race_results")
                 if res_list: r.rpush("race_results", *[json.dumps(res) for res in res_list])
                 st.rerun()
-    else:
-        st.error("Admin login required.")
+    else: st.error("Admin login required.")
