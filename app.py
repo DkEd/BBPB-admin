@@ -8,7 +8,6 @@ from datetime import datetime, date
 # --- CONFIG & CONNECTION ---
 st.set_page_config(page_title="Club Leaderboard", layout="wide")
 
-# Connect to Upstash Redis
 redis_url = os.environ.get("REDIS_URL")
 try:
     r = redis.from_url(redis_url, decode_responses=True)
@@ -30,15 +29,12 @@ def get_category(dob_str, race_date_str, mode="10Y"):
         dob = datetime.strptime(dob_str, '%Y-%m-%d')
         race_date = datetime.strptime(race_date_str, '%Y-%m-%d')
         age = race_date.year - dob.year - ((race_date.month, race_date.day) < (dob.month, dob.day))
-        
         if mode == "5Y":
             if age < 35: return "Senior"
-            cat_num = (age // 5) * 5
-            return f"V{cat_num}"
+            return f"V{(age // 5) * 5}"
         else:
             if age < 40: return "Senior"
-            cat_num = (age // 10) * 10
-            return f"V{cat_num}"
+            return f"V{(age // 10) * 10}"
     except: return "Unknown"
 
 def time_to_seconds(t_str):
@@ -48,151 +44,139 @@ def time_to_seconds(t_str):
         if len(parts) == 2: return parts[0] * 60 + parts[1]
     except: return None
 
-# --- HEADER & LOGO ---
+# --- HEADER ---
 col_logo, col_title = st.columns([1, 5])
 with col_logo:
     st.image(get_club_logo(), width=120)
 with col_title:
     st.markdown('<h1 style="color: #003366; margin-top: 10px;">Club Leaderboard</h1>', unsafe_allow_html=True)
 
-# --- SIDEBAR ADMIN ---
+# --- ADMIN LOGIN ---
 with st.sidebar:
     st.markdown('<h2 style="color: #003366;">🔐 Admin Login</h2>', unsafe_allow_html=True)
     pwd_input = st.text_input("Password", type="password")
     is_admin = (pwd_input == get_admin_password())
-    if is_admin:
-        st.success("Admin Access Granted")
 
-# --- MAIN UI TABS ---
+# --- TABS ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Admin", "👁️ View Controller"])
 
 all_distances = ["5k", "10k", "10 Mile", "HM", "Marathon"]
 
-# --- TAB 5: VIEW CONTROLLER ---
-with tab5:
+# --- TAB 4: ADMIN (WIPE & UPLOAD) ---
+with tab4:
     if is_admin:
-        st.header("👁️ Visibility & Category Settings")
-        col_v, col_c = st.columns(2)
-        with col_v:
-            st.subheader("Distances")
-            stored_vis = r.get("visible_distances")
-            default_vis = all_distances if not stored_vis else json.loads(stored_vis)
-            visible_list = [d for d in all_distances if st.checkbox(d, value=(d in default_vis), key=f"vis_{d}")]
-        with col_c:
-            st.subheader("Age Grouping")
-            stored_mode = r.get("age_mode") or "10Y"
-            age_choice = st.radio("Group Categories By:", ["10 Years (V40, V50...)", "5 Years (V35, V40, V45...)"], index=0 if stored_mode == "10Y" else 1)
-            current_mode = "10Y" if "10" in age_choice else "5Y"
-        if st.button("Save View Settings"):
-            r.set("visible_distances", json.dumps(visible_list))
-            r.set("age_mode", current_mode)
-            st.success("Settings Updated!")
-            st.rerun()
+        st.header("🛠️ Admin & Data Control")
+        
+        # --- BULK UPLOAD ---
+        col_up1, col_up2 = st.columns(2)
+        with col_up1:
+            st.subheader("1. Members CSV")
+            m_file = st.file_uploader("Upload Members", type="csv")
+            if m_file and st.button("🚀 Import Members"):
+                m_df = pd.read_csv(m_file)
+                m_df.columns = [c.lower().strip() for c in m_df.columns]
+                for _, row in m_df.iterrows():
+                    r.rpush("members", json.dumps({"name": str(row['name']).strip(), "gender": str(row['gender']).strip(), "dob": str(row['dob']).strip()}))
+                st.success("Members Imported! Reloading...")
+                st.rerun()
+
+        with col_up2:
+            st.subheader("2. Results CSV")
+            r_file = st.file_uploader("Upload Results", type="csv")
+            if r_file and st.button("💾 Import Results"):
+                r_df = pd.read_csv(r_file)
+                r_df.columns = [c.lower().strip() for c in r_df.columns]
+                m_lookup = {json.loads(m)['name']: json.loads(m) for m in r.lrange("members", 0, -1)}
+                for _, row in r_df.iterrows():
+                    name = str(row['name']).strip()
+                    if name in m_lookup:
+                        m = m_lookup[name]
+                        entry = {"name": name, "gender": m['gender'], "dob": m['dob'], "distance": str(row['distance']).strip(), 
+                                 "time_seconds": time_to_seconds(row['time_display']), "time_display": str(row['time_display']).strip(), 
+                                 "location": str(row['location']).strip(), "race_date": str(row['race_date']).strip()}
+                        r.rpush("race_results", json.dumps(entry))
+                st.success("Results Imported! Reloading...")
+                st.rerun()
+
+        st.divider()
+
+        # --- WIPE TOOLS ---
+        st.subheader("⚠️ Danger Zone (Testing Tools)")
+        st.write("Use these to clear data during testing.")
+        cw1, cw2, cw3 = st.columns(3)
+        with cw1:
+            if st.button("🗑️ Wipe ALL Results"):
+                r.delete("race_results")
+                st.warning("All race results deleted.")
+                st.rerun()
+        with cw2:
+            if st.button("👥 Wipe ALL Members"):
+                r.delete("members")
+                st.warning("All members deleted.")
+                st.rerun()
+        with cw3:
+            if st.button("🔥 Factory Reset (Both)"):
+                r.delete("race_results")
+                r.delete("members")
+                st.error("Database completely cleared.")
+                st.rerun()
+                
     else:
-        st.warning("Please log in via the sidebar to access View Controls.")
+        st.error("Admin Login Required")
 
 # --- TAB 1: LEADERBOARD ---
 with tab1:
     current_year = datetime.now().year
     years = ["All-Time"] + [str(y) for y in range(2023, current_year + 1)]
-    col_filter, _ = st.columns([1, 2])
-    with col_filter:
-        selected_year = st.selectbox("📅 Select Season:", years, index=0)
+    selected_year = st.selectbox("📅 Season:", years)
     
-    stored_vis = r.get("visible_distances")
-    active_distances = json.loads(stored_vis) if stored_vis else all_distances
-    age_mode = r.get("age_mode") or "10Y"
+    vis_data = r.get("visible_distances")
+    active_dist = json.loads(vis_data) if vis_data else all_distances
+    mode = r.get("age_mode") or "10Y"
 
-    raw_results = r.lrange("race_results", 0, -1)
-    if raw_results:
-        df = pd.DataFrame([json.loads(res) for res in raw_results])
+    results = r.lrange("race_results", 0, -1)
+    if results:
+        df = pd.DataFrame([json.loads(res) for res in results])
         df['race_date_dt'] = pd.to_datetime(df['race_date'])
         if selected_year != "All-Time":
             df = df[df['race_date_dt'].dt.year == int(selected_year)]
         
         if not df.empty:
-            df['Category'] = df.apply(lambda x: get_category(x['dob'], x['race_date'], mode=age_mode), axis=1)
-            unique_cats = sorted(df['Category'].unique(), key=lambda x: (x != 'Senior', x))
-            
-            for d in active_distances:
-                st.markdown(f"### 🏁 {d} Records - {selected_year}")
+            df['Category'] = df.apply(lambda x: get_category(x['dob'], x['race_date'], mode=mode), axis=1)
+            for d in active_dist:
+                st.markdown(f"### 🏁 {d} Records")
                 m_col, f_col = st.columns(2)
                 for gen, col in [("Male", m_col), ("Female", f_col)]:
                     with col:
-                        header_bg, text_color = ("#003366", "white") if gen == "Male" else ("#FFD700", "#003366")
-                        st.markdown(f'<div style="background-color: {header_bg}; padding: 10px; border-radius: 8px 8px 0px 0px; color: {text_color}; text-align: center; font-weight: 800; border: 2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
-                        subset = df[(df['distance'] == d) & (df['gender'] == gen)]
-                        if not subset.empty:
-                            leaders = subset.sort_values('time_seconds').groupby('Category', observed=True).head(1)
-                            for cat in unique_cats:
-                                row = leaders[leaders['Category'] == cat]
-                                if not row.empty:
-                                    row = row.iloc[0]
-                                    st.markdown(f'''<div style="border: 2px solid #003366; border-top: none; padding: 12px; background-color: white; margin-bottom: -2px; display: flex; justify-content: space-between; align-items: center;"><div style="line-height: 1.2;"><span style="background-color: #FFD700; color: #003366; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 0.75em; margin-right: 8px;">{row['Category']}</span><span style="font-weight: 600; color: #003366; font-size: 1.05em;">{row['name']}</span><br><span style="font-size: 0.75em; color: #666;">{row['location']} | {row['race_date']}</span></div><div style="font-weight: 800; color: #003366; font-size: 1.2em; border-left: 2px solid #FFD700; padding-left: 10px;">{row['time_display']}</div></div>''', unsafe_allow_html=True)
-                        else: st.markdown('<div style="border: 2px solid #003366; border-top: none; padding: 10px; text-align: center; color: #999; font-style: italic; font-size: 0.8em;">No records recorded</div>', unsafe_allow_html=True)
-                st.markdown("<br>", unsafe_allow_html=True)
-    else: st.info("Database is empty.")
+                        bg, tx = ("#003366", "white") if gen == "Male" else ("#FFD700", "#003366")
+                        st.markdown(f'<div style="background-color:{bg}; color:{tx}; padding:10px; border-radius:8px 8px 0 0; text-align:center; font-weight:800; border:2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
+                        sub = df[(df['distance'] == d) & (df['gender'] == gen)]
+                        if not sub.empty:
+                            leaders = sub.sort_values('time_seconds').groupby('Category').head(1).sort_values('Category')
+                            for _, row in leaders.iterrows():
+                                st.markdown(f'''<div style="border:2px solid #003366; border-top:none; padding:12px; background:white; margin-bottom:-2px; display:flex; justify-content:space-between; align-items:center;">
+                                    <div><span style="background:#FFD700; color:#003366; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8em; margin-right:8px;">{row['Category']}</span><b>{row['name']}</b><br><small>{row['location']} | {row['race_date']}</small></div>
+                                    <div style="font-weight:800; color:#003366; font-size:1.1em;">{row['time_display']}</div></div>''', unsafe_allow_html=True)
+                        else: st.markdown('<div style="border:1px solid #ddd; padding:10px; text-align:center; font-size:0.8em; color:#999;">No data</div>', unsafe_allow_html=True)
+    else: st.info("Database empty.")
 
-# --- TAB 2: ACTIVITY ---
+# --- TAB 5: VIEW CONTROLLER ---
+with tab5:
+    if is_admin:
+        st.subheader("Leaderboard Settings")
+        stored_mode = r.get("age_mode") or "10Y"
+        age_toggle = st.radio("Age Grouping:", ["10 Year Steps", "5 Year Steps"], index=0 if stored_mode == "10Y" else 1)
+        if st.button("Save Settings"):
+            r.set("age_mode", "10Y" if "10" in age_toggle else "5Y")
+            st.success("Updated!")
+            st.rerun()
+    else: st.warning("Login as Admin to change views.")
+
+# (Tab 2 and Tab 3 logic follows standard dataframe display from Redis)
 with tab2:
-    st.header("Recent Race Activity")
-    raw_results = r.lrange("race_results", 0, -1)
-    if raw_results:
-        all_df = pd.DataFrame([json.loads(res) for res in raw_results]).sort_values('race_date', ascending=False)
-        st.dataframe(all_df[['race_date', 'name', 'distance', 'time_display', 'location']], use_container_width=True, hide_index=True)
-
-# --- TAB 3: MEMBERS ---
+    if results:
+        st.dataframe(pd.DataFrame([json.loads(res) for res in results]).sort_values('race_date', ascending=False), use_container_width=True)
 with tab3:
-    if is_admin:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Register Member")
-            with st.form("mem_form", clear_on_submit=True):
-                n = st.text_input("Full Name")
-                g = st.selectbox("Gender", ["Male", "Female"])
-                b = st.date_input("DOB", value=date(1990, 1, 1))
-                if st.form_submit_button("Save Member"):
-                    if n: r.rpush("members", json.dumps({"name":n, "gender":g, "dob":str(b)}))
-                    st.rerun()
-        with col2:
-            st.subheader("Member List")
-            m_raw = r.lrange("members", 0, -1)
-            if m_raw:
-                m_list = [json.loads(m) for m in m_raw]
-                st.dataframe(pd.DataFrame(m_list).sort_values('name'), use_container_width=True, hide_index=True)
-    else: st.info("Admin log in required to manage members.")
-
-# --- TAB 4: ADMIN (IMPORTS & LOGO) ---
-with tab4:
-    if is_admin:
-        with st.expander("🎨 Brand Settings (Logo)"):
-            new_logo_url = st.text_input("Club Logo URL", value=get_club_logo())
-            if st.button("Update Logo"):
-                r.set("club_logo_url", new_logo_url)
-                st.rerun()
-
-        st.subheader("Bulk Import")
-        m_file = st.file_uploader("Upload Members CSV", type="csv")
-        if m_file and st.button("🚀 Import Members"):
-            m_df = pd.read_csv(m_file)
-            for _, row in m_df.iterrows():
-                r.rpush("members", json.dumps({"name": str(row['name']), "gender": str(row['gender']), "dob": str(row['dob'])}))
-            st.success("Members Added!")
-            
-        r_file = st.file_uploader("Upload Results CSV", type="csv")
-        if r_file and st.button("💾 Import Results"):
-            r_df = pd.read_csv(r_file)
-            m_raw = r.lrange("members", 0, -1)
-            m_lookup = {json.loads(m)['name']: json.loads(m) for m in m_raw}
-            for _, row in r_df.iterrows():
-                if str(row['name']) in m_lookup:
-                    m = m_lookup[str(row['name'])]
-                    entry = {"name": str(row['name']), "gender": m['gender'], "dob": m['dob'], "distance": str(row['distance']), "time_seconds": time_to_seconds(str(row['time_display'])), "time_display": str(row['time_display']), "location": str(row['location']), "race_date": str(row['race_date'])}
-                    r.rpush("race_results", json.dumps(entry))
-            st.success("Results Saved!")
-            st.rerun()
-
-        if st.button("🗑️ Wipe All Results"):
-            r.delete("race_results")
-            st.rerun()
-    else: st.error("Admin Login Required")
+    m_raw = r.lrange("members", 0, -1)
+    if m_raw:
+        st.dataframe(pd.DataFrame([json.loads(m) for m in m_raw]).sort_values('name'), use_container_width=True)
