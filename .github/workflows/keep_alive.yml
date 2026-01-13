@@ -1,0 +1,16 @@
+name: Keep App Alive
+
+on:
+  schedule:
+    # Runs every 14 minutes
+    # 12-21 in the hour slot covers the 12:00 to 21:59 window (UTC)
+    - cron: '*/14 12-21 * * *'
+  workflow_dispatch: 
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping AutoKudos
+        run: |
+          curl -I -s https://autokudos.onrender.com
