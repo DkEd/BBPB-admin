@@ -16,7 +16,6 @@ except Exception as e:
 
 # --- HELPER FUNCTIONS ---
 def format_time_string(t_str):
-    """Ensures time is always HH:MM:SS."""
     try:
         parts = str(t_str).strip().split(':')
         if len(parts) == 2: return f"00:{parts[0].zfill(2)}:{parts[1].zfill(2)}"
@@ -35,7 +34,7 @@ def get_admin_password():
     return r.get("admin_password") or "admin123"
 
 def get_club_logo():
-    return r.get("club_logo_url") or "https://scontent-lhr6-2.xx.fbcdn.net/v/t39.30808-6/613136946_122094772515215234_2783950400659519915_n.jpg?_nc_cat=105&ccb=1-7&oh=00_AfquWT54_DxkPrvTyRnSk2y3a3tBuCxJBvkLCS8rd7ANlg&oe=696A8E3D"
+    return r.get("club_logo_url") or "https://scontent-lhr6-2.xx.fbcdn.net/v/t39.30808-6/613136946_122094772515215234_2783950400659519915_n.jpg"
 
 def get_category(dob_str, race_date_str, mode="10Y"):
     try:
@@ -86,7 +85,7 @@ with st.sidebar:
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Approvals & Bulk", "👁️ View Controller"])
 all_distances = ["5k", "10k", "10 Mile", "HM", "Marathon"]
 
-# --- TAB 1: LEADERBOARDS ---
+# --- TAB 1: LEADERBOARDS (THE RESTORED LOGIC) ---
 with tab1:
     raw_res = r.lrange("race_results", 0, -1)
     if raw_res:
@@ -116,15 +115,24 @@ with tab1:
                     st.markdown(f'<div style="background-color:{bg}; color:{tx}; padding:10px; border-radius:8px 8px 0 0; text-align:center; font-weight:800; border:2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
                     sub = display_df[(display_df['distance'] == d) & (display_df['gender'] == gen)]
                     if not sub.empty:
+                        # Get fastest per category
                         leaders = sub.sort_values('time_seconds').groupby('Category').head(1)
                         for _, r_data in leaders.sort_values('Category').iterrows():
-                            st.markdown(f'''<div style="border:2px solid #003366; border-top:none; padding:12px; background:white; margin-bottom:-2px; display:flex; justify-content:space-between; align-items:center;">
-                                <div><span style="background:#FFD700; color:#003366; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8em; margin-right:8px;">{r_data['Category']}</span><b>{r_data['name']}</b><br><small>{r_data['location']} | {r_data['race_date']}</small></div>
-                                <div style="font-weight:800; color:#003366; font-size:1.1em;">{r_data['time_display']}</div></div>''', unsafe_allow_html=True)
-                    else: st.markdown('<div style="border:2px solid #003366; border-top:none; padding:10px; text-align:center; color:#999; font-size:0.8em;">No records</div>', unsafe_allow_html=True)
-    else: st.info("No results in the database yet.")
+                            st.markdown(f'''
+                            <div style="border:2px solid #003366; border-top:none; padding:12px; background:white; margin-bottom:-2px; display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                    <span style="background:#FFD700; color:#003366; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8em; margin-right:8px;">{r_data['Category']}</span>
+                                    <b>{r_data['name']}</b><br>
+                                    <small style="color:#666;">{r_data['location']} | {r_data['race_date']}</small>
+                                </div>
+                                <div style="font-weight:800; color:#003366; font-size:1.1em;">{r_data['time_display']}</div>
+                            </div>''', unsafe_allow_html=True)
+                    else:
+                        st.markdown('<div style="border:2px solid #003366; border-top:none; padding:10px; text-align:center; color:#999; font-size:0.8em;">No records</div>', unsafe_allow_html=True)
+    else:
+        st.info("No results in the database yet.")
 
-# --- PROTECTED CONTENT ---
+# --- PROTECTED ADMIN CONTENT ---
 if is_admin:
     with tab2: # ACTIVITY
         st.subheader("⏱️ Activity Log & Manual Deletion")
@@ -162,15 +170,15 @@ if is_admin:
                     matched_member = next((m for m in members_data if m['name'] == p['name']), None)
                     
                     if not matched_member:
-                        st.error(f"⚠️ '{p['name']}' not found in database (Possible Spelling Error).")
-                        corrected_name = st.selectbox("Assign to correct member:", ["-- Select Member --"] + member_names, key=f"corr_{i}")
+                        st.error(f"⚠️ '{p['name']}' not found in database.")
+                        corrected_name = st.selectbox("Assign to member:", ["-- Select --"] + member_names, key=f"corr_{i}")
                         matched_member = next((m for m in members_data if m['name'] == corrected_name), None)
                     else:
-                        st.success(f"Match Found: {matched_member['name']}")
+                        st.success(f"Match: {matched_member['name']}")
 
                     if matched_member:
                         if is_duplicate(matched_member['name'], p['race_date']):
-                            st.warning("🚨 This runner already has an entry for this date.")
+                            st.warning("🚨 Duplicate: Date already has a result.")
                         
                         c1, c2 = st.columns(2)
                         if c1.button("✅ Approve", key=f"app_{i}"):
@@ -184,13 +192,11 @@ if is_admin:
                             r.rpush("race_results", json.dumps(entry))
                             r.lrem("pending_results", 1, p_json); st.rerun()
                     
-                    if st.button("❌ Reject / Delete", key=f"rej_{i}"):
+                    if st.button("❌ Reject", key=f"rej_{i}"):
                         r.lrem("pending_results", 1, p_json); st.rerun()
-        else: st.info("No submissions waiting.")
-
+        
         st.divider()
         st.subheader("🚀 Bulk Import")
-        st.download_button("Download Template", "name,distance,time_display,location,race_date\nJohn Smith,5k,00:19:45,Leeds,2025-01-01", "results_template.csv")
         r_file = st.file_uploader("Upload Results CSV", type="csv")
         if r_file and st.button("Process CSV"):
             m_lookup = {m['name']: m for m in members_data}
@@ -221,4 +227,4 @@ if is_admin:
             st.success("Saved!"); st.rerun()
 else:
     for t in [tab2, tab3, tab4, tab5]:
-        with t: st.warning("🔒 Enter password in sidebar to access admin tools.")
+        with t: st.warning("🔒 Enter password in sidebar.")
