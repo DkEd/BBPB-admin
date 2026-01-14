@@ -48,12 +48,11 @@ with col_logo:
 with col_title:
     st.markdown('<h1 style="color: #003366; margin-top: 10px;">AutoKudos Admin Portal</h1>', unsafe_allow_html=True)
 
-# --- SIDEBAR (LOGIN & REFRESH) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown('<h2 style="color: #003366;">🔐 Admin Login</h2>', unsafe_allow_html=True)
     pwd_input = st.text_input("Password", type="password")
     is_admin = (pwd_input == get_admin_password())
-    
     st.divider()
     if st.button("🔄 Refresh All Data", use_container_width=True):
         st.rerun()
@@ -93,15 +92,6 @@ with tab1:
                                 <div style="font-weight:800; color:#003366; font-size:1.1em;">{r_data['time_display']}</div></div>''', unsafe_allow_html=True)
                     else: st.markdown('<div style="border:2px solid #003366; border-top:none; padding:10px; text-align:center; color:#999; font-size:0.8em;">No records</div>', unsafe_allow_html=True)
 
-# --- TAB 2/3 (ADMIN DATA) ---
-with tab2:
-    if is_admin:
-        if raw_res: st.dataframe(pd.DataFrame([json.loads(res) for res in raw_res]).sort_values('race_date', ascending=False), use_container_width=True, hide_index=True)
-with tab3:
-    if is_admin:
-        raw_mem = r.lrange("members", 0, -1)
-        if raw_mem: st.dataframe(pd.DataFrame([json.loads(m) for m in raw_mem]).sort_values('name'), use_container_width=True, hide_index=True)
-
 # --- TAB 4: APPROVALS & BULK ---
 with tab4:
     if is_admin:
@@ -125,52 +115,3 @@ with tab4:
                             r.lrem("pending_results", 1, p_json); st.rerun()
                         if c2.button("❌ Reject", key=f"rej_{i}"):
                             r.lrem("pending_results", 1, p_json); st.rerun()
-        else: st.info("No pending results.")
-
-        st.divider()
-        st.subheader("🚀 Bulk CSV Import")
-        col_m, col_r = st.columns(2)
-        with col_m:
-            m_file = st.file_uploader("Upload Members CSV", type="csv")
-            if m_file and st.button("Import Members"):
-                m_df = pd.read_csv(m_file)
-                m_df.columns = [c.lower().strip() for c in m_df.columns]
-                added = 0
-                for _, row in m_df.iterrows():
-                    r.rpush("members", json.dumps({"name": str(row['name']).strip(), "gender": str(row['gender']).strip(), "dob": str(row['dob']).strip()}))
-                    added += 1
-                st.success(f"Added {added} members."); st.rerun()
-        with col_r:
-            r_file = st.file_uploader("Upload Results CSV", type="csv")
-            if r_file and st.button("Import Results"):
-                m_lookup = {json.loads(m)['name']: json.loads(m) for m in r.lrange("members", 0, -1)}
-                r_df = pd.read_csv(r_file)
-                r_df.columns = [c.lower().strip() for c in r_df.columns]
-                added = 0
-                for _, row in r_df.iterrows():
-                    n = str(row['name']).strip()
-                    if n in m_lookup:
-                        m = m_lookup[n]
-                        entry = {"name": n, "gender": m['gender'], "dob": m['dob'], "distance": str(row['distance']).strip(), "time_seconds": time_to_seconds(str(row['time_display'])), "time_display": str(row['time_display']).strip(), "location": str(row['location']).strip(), "race_date": str(row['race_date']).strip()}
-                        r.rpush("race_results", json.dumps(entry))
-                        added += 1
-                st.success(f"Added {added} results."); st.rerun()
-        
-        st.divider()
-        if st.button("🗑️ Wipe All Results"): r.delete("race_results"); st.rerun()
-    else: st.warning("Admin Login Required.")
-
-# --- TAB 5: VIEW CONTROLLER ---
-with tab5:
-    if is_admin:
-        st.header("👁️ View Controller")
-        stored_vis = r.get("visible_distances")
-        default_vis = all_distances if not stored_vis else json.loads(stored_vis)
-        visible_list = [d for d in all_distances if st.checkbox(d, value=(d in default_vis), key=f"v_{d}")]
-        st.divider()
-        stored_mode = r.get("age_mode") or "10Y"
-        age_choice = st.radio("Age Grouping:", ["10 Years", "5 Years"], index=0 if stored_mode == "10Y" else 1)
-        if st.button("Save View Settings"):
-            r.set("visible_distances", json.dumps(visible_list))
-            r.set("age_mode", "10Y" if "10" in age_choice else "5Y")
-            st.success("Updated!"); st.rerun()
