@@ -28,6 +28,7 @@ def time_to_seconds(t_str):
         parts = list(map(int, str(t_str).split(':')))
         if len(parts) == 3: return parts[0] * 3600 + parts[1] * 60 + parts[2]
         if len(parts) == 2: return parts[0] * 60 + parts[1]
+        return 999999
     except: return 999999
 
 def get_admin_password():
@@ -48,24 +49,32 @@ def get_category(dob_str, race_date_str, mode="10Y"):
     except: return "Unknown"
 
 def is_duplicate(name, race_date):
-    """STRICT CHECK: Returns True if this name and date already exist in race_results."""
     current_results = r.lrange("race_results", 0, -1)
     for res_json in current_results:
         res = json.loads(res_json)
-        if str(res['name']).strip() == str(name).strip() and str(res['race_date']).strip() == str(race_date).strip():
+        if str(res.get('name', '')).strip() == str(name).strip() and str(res.get('race_date', '')).strip() == str(race_date).strip():
             return True
     return False
 
 def run_database_deduplication():
-    """Wipes the DB and rewrites only unique Name+Date entries (keeping fastest time)."""
     raw_res = r.lrange("race_results", 0, -1)
     if not raw_res: return 0, 0
     unique_entries = {}
     for res_json in raw_res:
         data = json.loads(res_json)
         key = (data['name'], data['race_date'])
-        if key not in unique_entries or data['time_seconds'] < json.loads(unique_entries[key])['time_seconds']:
+        
+        # None-safe comparison logic
+        new_time = data.get('time_seconds') if data.get('time_seconds') is not None else 999999
+        
+        if key not in unique_entries:
             unique_entries[key] = res_json
+        else:
+            existing_data = json.loads(unique_entries[key])
+            existing_time = existing_data.get('time_seconds') if existing_data.get('time_seconds') is not None else 999999
+            if new_time < existing_time:
+                unique_entries[key] = res_json
+                
     r.delete("race_results")
     for final_json in unique_entries.values():
         r.rpush("race_results", final_json)
@@ -169,7 +178,6 @@ if is_admin:
             old, new = run_database_deduplication()
             st.success(f"Removed {old-new} duplicates."); st.rerun()
 
-        # EXPORT
         st.subheader("📥 Excel Export")
         if raw_res:
             st.download_button("Download All Results (CSV)", pd.DataFrame([json.loads(res) for res in raw_res]).to_csv(index=False), "results_backup.csv", "text/csv")
@@ -191,7 +199,8 @@ if is_admin:
                     if matched_member:
                         if is_duplicate(matched_member['name'], p['race_date']): st.warning("DUPLICATE: Date already recorded.")
                         if st.button("✅ Approve", key=f"app_{i}"):
-                            entry = {"name": matched_member['name'], "gender": matched_member['gender'], "dob": matched_member['dob'], "distance": p['distance'], "time_seconds": time_to_seconds(p['time_display']), "time_display": format_time_string(p['time_display']), "location": p['location'], "race_date": p['race_date']}
+                            t_sec = time_to_seconds(p['time_display'])
+                            entry = {"name": matched_member['name'], "gender": matched_member['gender'], "dob": matched_member['dob'], "distance": p['distance'], "time_seconds": t_sec if t_sec else 999999, "time_display": format_time_string(p['time_display']), "location": p['location'], "race_date": p['race_date']}
                             r.rpush("race_results", json.dumps(entry)); r.lrem("pending_results", 1, p_json); st.rerun()
                     if st.button("❌ Reject", key=f"rej_{i}"): r.lrem("pending_results", 1, p_json); st.rerun()
 
@@ -212,12 +221,12 @@ if is_admin:
                 for _, row in pd.read_csv(r_file).iterrows():
                     n, d_str = str(row['name']).strip(), str(row['race_date']).strip()
                     dist = str(row['distance']).strip()
-                    # FIX: Map "10mile" to "10 Mile" if found
                     if dist.lower().replace(" ", "") == "10mile": dist = "10 Mile"
                     
                     if n in m_lookup and not is_duplicate(n, d_str):
                         m = m_lookup[n]
-                        entry = {"name": n, "gender": m['gender'], "dob": m['dob'], "distance": dist, "time_seconds": time_to_seconds(str(row['time_display'])), "time_display": format_time_string(str(row['time_display'])), "location": str(row['location']).strip(), "race_date": d_str}
+                        t_sec = time_to_seconds(str(row['time_display']))
+                        entry = {"name": n, "gender": m['gender'], "dob": m['dob'], "distance": dist, "time_seconds": t_sec if t_sec else 999999, "time_display": format_time_string(str(row['time_display'])), "location": str(row['location']).strip(), "race_date": d_str}
                         r.rpush("race_results", json.dumps(entry)); added += 1
                     else: skipped += 1
                 st.success(f"Added {added}, Skipped {skipped} duplicates."); st.rerun()
@@ -232,6 +241,9 @@ if is_admin:
         if st.button("Save View Controller Settings"):
             r.set("visible_distances", json.dumps(visible_list))
             r.set("age_mode", "10Y" if "10" in age_choice else "5Y"); st.success("Saved!")
+        st.divider()
+        if st.button("🗑️ Wipe All Results Database"):
+            if st.checkbox("Verify results wipe?"): r.delete("race_results"); st.rerun()
 else:
     for t in [tab2, tab3, tab4, tab5]:
         with t: st.warning("🔒 Admin Login Required.")
