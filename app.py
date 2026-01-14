@@ -12,7 +12,7 @@ redis_url = os.environ.get("REDIS_URL")
 try:
     r = redis.from_url(redis_url, decode_responses=True)
 except Exception as e:
-    st.error(f"Redis Connection Failed: {e}")
+    st.error("Redis Connection Failed. Check your REDIS_URL environment variable.")
 
 # --- HELPER FUNCTIONS ---
 def format_time_string(t_str):
@@ -31,11 +31,11 @@ def time_to_seconds(t_str):
         return 999999
     except: return 999999
 
-def get_admin_password():
-    return r.get("admin_password") or "admin123"
-
 def get_club_logo():
-    return r.get("club_logo_url") or "https://scontent-lhr6-2.xx.fbcdn.net/v/t39.30808-6/613136946_122094772515215234_2783950400659519915_n.jpg"
+    # Priority: Redis Saved URL -> Default Fallback
+    stored = r.get("club_logo_url")
+    if stored and stored.startswith("http"): return stored
+    return "https://cdn-icons-png.flaticon.com/512/55/55281.png" # Professional Running Fallback
 
 def get_category(dob_str, race_date_str, mode="10Y"):
     try:
@@ -63,54 +63,60 @@ def run_database_deduplication():
     for res_json in raw_res:
         data = json.loads(res_json)
         key = (data['name'], data['race_date'])
-        
-        # None-safe comparison logic
         new_time = data.get('time_seconds') if data.get('time_seconds') is not None else 999999
-        
         if key not in unique_entries:
             unique_entries[key] = res_json
         else:
             existing_data = json.loads(unique_entries[key])
             existing_time = existing_data.get('time_seconds') if existing_data.get('time_seconds') is not None else 999999
-            if new_time < existing_time:
-                unique_entries[key] = res_json
-                
+            if new_time < existing_time: unique_entries[key] = res_json
     r.delete("race_results")
     for final_json in unique_entries.values():
         r.rpush("race_results", final_json)
     return len(raw_res), len(unique_entries)
 
-# --- UI HEADER ---
-col_logo, col_title = st.columns([1, 5])
-with col_logo: st.image(get_club_logo(), width=120)
-with col_title: st.markdown('<h1 style="color: #003366; margin-top: 10px;">AutoKudos Admin Portal</h1>', unsafe_allow_html=True)
-
-# --- SIDEBAR ---
+# --- SIDEBAR & AUTH ---
 with st.sidebar:
+    st.image(get_club_logo(), width=150)
+    st.markdown("### 🔒 Admin Access")
     pwd_input = st.text_input("Password", type="password")
-    is_admin = (pwd_input == get_admin_password())
-    if st.button("🔄 Refresh Data", use_container_width=True): st.rerun()
+    admin_pwd = r.get("admin_password") or "admin123"
+    is_admin = (pwd_input == admin_pwd)
+    
+    st.divider()
+    # Health Audit - Constant Visibility
+    raw_mem = r.lrange("members", 0, -1)
+    members_data = [json.loads(m) for m in raw_mem]
+    missing_dob = [m['name'] for m in members_data if not m.get('dob')]
+    
+    if missing_dob:
+        st.error(f"⚠️ Health Alert: {len(missing_dob)} members missing DOB")
+    else:
+        st.success("✅ Data Health: Perfect")
+    
+    if st.button("🔄 Force Refresh All Data"): st.rerun()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Leaderboards", "⏱️ Activity", "👤 Members", "🛠️ Approvals & Bulk", "👁️ Settings"])
+# --- MAIN TABS ---
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Leaderboard", "📥 Submissions", "📋 Race Log", "👥 Members", "⚙️ System"])
 all_distances = ["5k", "10k", "10 Mile", "HM", "Marathon"]
 
-# --- TAB 1: LEADERBOARDS ---
+# --- TAB 1: LEADERBOARD ---
 with tab1:
     raw_res = r.lrange("race_results", 0, -1)
-    members_list = [json.loads(m) for m in r.lrange("members", 0, -1)]
-    active_members = [m['name'] for m in members_list if m.get('status', 'Active') == 'Active']
+    active_members = [m['name'] for m in members_data if m.get('status', 'Active') == 'Active']
     
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total Records", len(raw_res))
-    c2.metric("Active Members", len(active_members))
-    c3.metric("Former Members", len(members_list) - len(active_members))
-    
+    c1.metric("Results", len(raw_res))
+    c2.metric("Active Runners", len(active_members))
+    pending_count = r.llen("pending_results")
+    c3.metric("Pending Approvals", pending_count, delta_color="inverse")
+
     if raw_res:
         df = pd.DataFrame([json.loads(res) for res in raw_res])
         df['race_date_dt'] = pd.to_datetime(df['race_date'])
-        df['time_display'] = df['time_display'].apply(format_time_string)
         years = ["All-Time"] + sorted([str(y) for y in df['race_date_dt'].dt.year.unique()], reverse=True)
-        sel_year = st.selectbox("📅 Season Select:", years)
+        sel_year = st.selectbox("Season Select:", years)
+        
         display_df = df.copy()
         if sel_year != "All-Time":
             display_df = display_df[display_df['race_date_dt'].dt.year == int(sel_year)]
@@ -121,129 +127,157 @@ with tab1:
         display_df['Category'] = display_df.apply(lambda x: get_category(x['dob'], x['race_date'], mode=age_mode), axis=1)
 
         for d in active_dist:
-            st.markdown(f"### 🏁 {d} Records")
+            st.markdown(f"### 🏁 {d}")
             m_col, f_col = st.columns(2)
             for gen, col in [("Male", m_col), ("Female", f_col)]:
                 with col:
                     bg, tx = ("#003366", "white") if gen == "Male" else ("#FFD700", "#003366")
-                    st.markdown(f'<div style="background-color:{bg}; color:{tx}; padding:10px; border-radius:8px 8px 0 0; text-align:center; font-weight:800; border:2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="background:{bg}; color:{tx}; padding:8px; border-radius:8px 8px 0 0; text-align:center; font-weight:bold; border:2px solid #003366;">{gen.upper()}</div>', unsafe_allow_html=True)
                     sub = display_df[(display_df['distance'] == d) & (display_df['gender'] == gen)]
                     if not sub.empty:
                         leaders = sub.sort_values('time_seconds').groupby('Category').head(1)
                         for _, r_data in leaders.sort_values('Category').iterrows():
-                            name_style = "color:#003366;" if r_data['name'] in active_members else "color:#999; font-style:italic;"
-                            st.markdown(f'''<div style="border:2px solid #003366; border-top:none; padding:12px; background:white; margin-bottom:-2px; display:flex; justify-content:space-between; align-items:center;">
-                                <div><span style="background:#FFD700; color:#003366; padding:2px 6px; border-radius:4px; font-weight:bold; font-size:0.8em; margin-right:8px;">{r_data['Category']}</span><b style="{name_style}">{r_data['name']}</b><br><small>{r_data['location']} | {r_data['race_date']}</small></div>
-                                <div style="font-weight:800; color:#003366; font-size:1.1em;">{r_data['time_display']}</div></div>''', unsafe_allow_html=True)
-                    else: st.markdown('<div style="border:2px solid #003366; border-top:none; padding:10px; text-align:center; color:#999; font-size:0.8em;">No records</div>', unsafe_allow_html=True)
+                            opacity = "1.0" if r_data['name'] in active_members else "0.5"
+                            st.markdown(f'''<div style="border:2px solid #003366; border-top:none; padding:10px; background:white; margin-bottom:-2px; display:flex; justify-content:space-between; align-items:center; opacity:{opacity};">
+                                <div><span style="background:#FFD700; color:#003366; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:0.75em; margin-right:5px;">{r_data['Category']}</span><b>{r_data['name']}</b><br><small>{r_data['location']}</small></div>
+                                <div style="font-weight:bold; color:#003366;">{r_data['time_display']}</div></div>''', unsafe_allow_html=True)
+                    else: st.markdown('<div style="border:2px solid #003366; border-top:none; padding:10px; text-align:center; font-size:0.8em; color:#ccc;">No data</div>', unsafe_allow_html=True)
 
-# --- PROTECTED ADMIN CONTENT ---
+# --- PROTECTED ADMIN TABS ---
 if is_admin:
-    with tab2: # ACTIVITY
-        st.subheader("⏱️ Manual Management")
-        if raw_res:
-            res_list = sorted([json.loads(res) for res in raw_res], key=lambda x: x['race_date'], reverse=True)
-            for i, item in enumerate(res_list):
-                c1, c2 = st.columns([5, 1])
-                c1.write(f"**{item['name']}** - {item['distance']} ({item['time_display']}) on {item['race_date']}")
-                if c2.button("🗑️", key=f"del_{i}"):
-                    r.lrem("race_results", 1, json.dumps(item)); st.rerun()
-
-    with tab3: # MEMBERS & HEALTH
-        st.subheader("🛡️ Data Health Audit")
-        raw_mem = r.lrange("members", 0, -1)
-        members_data = [json.loads(m) for m in raw_mem]
-        missing_dob = [m['name'] for m in members_data if not m.get('dob')]
-        future_races = [json.loads(res) for res in r.lrange("race_results", 0, -1) if datetime.strptime(json.loads(res)['race_date'], '%Y-%m-%d').date() > date.today()]
-        
-        if missing_dob or future_races:
-            if missing_dob: st.error(f"⚠️ Missing DOB for: {', '.join(missing_dob)}")
-            if future_races: st.warning(f"🕒 Found {len(future_races)} future race dates.")
-        else: st.success("✅ Data Integrity: Good")
-
-        st.divider()
-        st.subheader("👤 Member Status")
-        for i, row in enumerate(members_data):
-            col_name, col_stat = st.columns([3, 1])
-            status = row.get('status', 'Active')
-            col_name.write(f"**{row['name']}** - {row['dob']} ({status})")
-            if col_stat.button("Toggle Status", key=f"stat_{i}"):
-                r.lrem("members", 1, json.dumps(row))
-                row['status'] = "Left" if status == "Active" else "Active"
-                r.rpush("members", json.dumps(row)); st.rerun()
-
-    with tab4: # APPROVALS & BULK
-        st.header("🛠️ Admin Tools")
-        if st.button("🧹 Run Deduplication (Clean History)", type="primary"):
-            old, new = run_database_deduplication()
-            st.success(f"Removed {old-new} duplicates."); st.rerun()
-
-        st.subheader("📥 Excel Export")
-        if raw_res:
-            st.download_button("Download All Results (CSV)", pd.DataFrame([json.loads(res) for res in raw_res]).to_csv(index=False), "results_backup.csv", "text/csv")
-
-        st.divider()
-        st.subheader("📋 Pending Approvals")
+    with tab2: # SUBMISSIONS
+        st.subheader("📥 Pending Submissions")
         pending_raw = r.lrange("pending_results", 0, -1)
         member_names = sorted([m['name'] for m in members_data])
-        if pending_raw:
-            for i, p_json in enumerate(pending_raw):
-                p = json.loads(p_json)
-                with st.expander(f"Review: {p['name']} - {p['race_date']}"):
-                    matched_member = next((m for m in members_data if m['name'] == p['name']), None)
-                    if not matched_member:
-                        st.error("Name mismatch.")
-                        corrected = st.selectbox("Assign to:", ["-- Select --"] + member_names, key=f"corr_{i}")
-                        matched_member = next((m for m in members_data if m['name'] == corrected), None)
-                    
-                    if matched_member:
-                        if is_duplicate(matched_member['name'], p['race_date']): st.warning("DUPLICATE: Date already recorded.")
-                        if st.button("✅ Approve", key=f"app_{i}"):
-                            t_sec = time_to_seconds(p['time_display'])
-                            entry = {"name": matched_member['name'], "gender": matched_member['gender'], "dob": matched_member['dob'], "distance": p['distance'], "time_seconds": t_sec if t_sec else 999999, "time_display": format_time_string(p['time_display']), "location": p['location'], "race_date": p['race_date']}
-                            r.rpush("race_results", json.dumps(entry)); r.lrem("pending_results", 1, p_json); st.rerun()
-                    if st.button("❌ Reject", key=f"rej_{i}"): r.lrem("pending_results", 1, p_json); st.rerun()
+        
+        if not pending_raw: st.info("No submissions waiting for review.")
+        for i, p_json in enumerate(pending_raw):
+            p = json.loads(p_json)
+            with st.expander(f"Review: {p['name']} ({p['distance']})"):
+                matched = next((m for m in members_data if m['name'] == p['name']), None)
+                if not matched:
+                    st.error("Name Typo Found!")
+                    correct_name = st.selectbox("Assign to Member:", ["-- Select --"] + member_names, key=f"match_{i}")
+                    matched = next((m for m in members_data if m['name'] == correct_name), None)
+                
+                if matched:
+                    if is_duplicate(matched['name'], p['race_date']): st.warning("⚠️ Warning: This runner already has a result for this date.")
+                    if st.button("✅ Approve Entry", key=f"app_{i}"):
+                        t_sec = time_to_seconds(p['time_display'])
+                        entry = {"name": matched['name'], "gender": matched['gender'], "dob": matched['dob'], "distance": p['distance'], "time_seconds": t_sec, "time_display": format_time_string(p['time_display']), "location": p['location'], "race_date": p['race_date']}
+                        r.rpush("race_results", json.dumps(entry))
+                        r.lrem("pending_results", 1, p_json); st.rerun()
+                if st.button("❌ Reject / Delete", key=f"rej_{i}"):
+                    r.lrem("pending_results", 1, p_json); st.rerun()
 
+    with tab3: # RACE LOG (EDIT/DELETE/EXPORT)
+        st.subheader("📋 Searchable Race Log")
+        search_q = st.text_input("🔍 Search by Runner Name:", "")
+        
+        if raw_res:
+            res_df = pd.DataFrame([json.loads(res) for res in raw_res])
+            if search_q:
+                res_df = res_df[res_df['name'].str.contains(search_q, case=False)]
+            
+            st.download_button("📥 Export Log to Excel (CSV)", res_df.to_csv(index=False), "bbpb_history.csv", "text/csv")
+            
+            for i, row in res_df.iterrows():
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 2, 1])
+                    c1.write(f"**{row['name']}**")
+                    c1.write(f"{row['distance']} | {row['time_display']} | {row['race_date']}")
+                    
+                    if c2.button("📝 Edit", key=f"edit_{i}"):
+                        st.session_state[f"editing_{i}"] = True
+                    
+                    if c3.button("🗑️", key=f"del_{i}"):
+                        r.lrem("race_results", 1, json.dumps(row.to_dict())); st.rerun()
+                    
+                    if st.session_state.get(f"editing_{i}"):
+                        with st.form(f"form_{i}"):
+                            new_dist = st.selectbox("Distance", all_distances, index=all_distances.index(row['distance']) if row['distance'] in all_distances else 0)
+                            new_time = st.text_input("Time", row['time_display'])
+                            new_loc = st.text_input("Location", row['location'])
+                            new_date = st.text_input("Date (YYYY-MM-DD)", row['race_date'])
+                            if st.form_submit_button("Save Changes"):
+                                r.lrem("race_results", 1, json.dumps(row.to_dict()))
+                                row['distance'], row['time_display'], row['location'], row['race_date'] = new_dist, new_time, new_loc, new_date
+                                row['time_seconds'] = time_to_seconds(new_time)
+                                r.rpush("race_results", json.dumps(row.to_dict()))
+                                del st.session_state[f"editing_{i}"]; st.rerun()
+
+    with tab4: # MEMBERS
+        st.subheader("👥 Member Database")
+        for i, m in enumerate(members_data):
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([3, 2, 1])
+                status = m.get('status', 'Active')
+                c1.write(f"**{m['name']}** ({m['gender']})")
+                c1.write(f"DOB: {m.get('dob', 'MISSING')}")
+                
+                if c2.button("Toggle Status", key=f"m_stat_{i}"):
+                    r.lrem("members", 1, json.dumps(m))
+                    m['status'] = "Left" if status == "Active" else "Active"
+                    r.rpush("members", json.dumps(m)); st.rerun()
+                
+                if c3.button("📝", key=f"m_edit_{i}"):
+                    st.session_state[f"m_edit_{i}"] = True
+                
+                if st.session_state.get(f"m_edit_{i}"):
+                    with st.form(f"m_form_{i}"):
+                        new_n = st.text_input("Name", m['name'])
+                        new_dob = st.text_input("DOB (YYYY-MM-DD)", m.get('dob', ''))
+                        if st.form_submit_button("Update Member"):
+                            r.lrem("members", 1, json.dumps(m))
+                            m['name'], m['dob'] = new_n, new_dob
+                            r.rpush("members", json.dumps(m))
+                            del st.session_state[f"m_edit_{i}"]; st.rerun()
+
+    with tab5: # SYSTEM
+        st.subheader("⚙️ System Configuration")
+        
+        # LOGO CONTROLLER
+        st.markdown("### 🖼️ Club Branding")
+        current_logo = r.get("club_logo_url") or ""
+        logo_url = st.text_input("Logo Image URL:", current_logo)
+        if st.button("Save Logo"):
+            r.set("club_logo_url", logo_url); st.success("Logo Updated!"); st.rerun()
+            
         st.divider()
-        st.subheader("🚀 Bulk Uploads")
+        st.markdown("### 🚀 Bulk Uploads")
         col_m, col_r = st.columns(2)
         with col_m:
-            m_file = st.file_uploader("Members CSV (name,gender,dob)", type="csv")
-            if m_file and st.button("Upload Members"):
+            m_file = st.file_uploader("Bulk Members (CSV: name,gender,dob)", type="csv")
+            if m_file and st.button("Process Members"):
                 for _, row in pd.read_csv(m_file).iterrows():
                     r.rpush("members", json.dumps({"name": str(row['name']).strip(), "gender": str(row['gender']).strip(), "dob": str(row['dob']).strip(), "status": "Active"}))
-                st.success("Members Updated!"); st.rerun()
+                st.success("Members Loaded!"); st.rerun()
         with col_r:
-            r_file = st.file_uploader("Results CSV (name,distance,time_display,location,race_date)", type="csv")
-            if r_file and st.button("Upload Results"):
+            r_file = st.file_uploader("Bulk Results (CSV: name,distance,time_display,location,race_date)", type="csv")
+            if r_file and st.button("Process Results"):
                 m_lookup = {m['name']: m for m in members_data}
                 added, skipped = 0, 0
                 for _, row in pd.read_csv(r_file).iterrows():
                     n, d_str = str(row['name']).strip(), str(row['race_date']).strip()
                     dist = str(row['distance']).strip()
                     if dist.lower().replace(" ", "") == "10mile": dist = "10 Mile"
-                    
                     if n in m_lookup and not is_duplicate(n, d_str):
                         m = m_lookup[n]
-                        t_sec = time_to_seconds(str(row['time_display']))
-                        entry = {"name": n, "gender": m['gender'], "dob": m['dob'], "distance": dist, "time_seconds": t_sec if t_sec else 999999, "time_display": format_time_string(str(row['time_display'])), "location": str(row['location']).strip(), "race_date": d_str}
+                        entry = {"name": n, "gender": m['gender'], "dob": m['dob'], "distance": dist, "time_seconds": time_to_seconds(str(row['time_display'])), "time_display": format_time_string(str(row['time_display'])), "location": str(row['location']).strip(), "race_date": d_str}
                         r.rpush("race_results", json.dumps(entry)); added += 1
                     else: skipped += 1
-                st.success(f"Added {added}, Skipped {skipped} duplicates."); st.rerun()
+                st.success(f"Added {added}, Skipped {skipped}"); st.rerun()
 
-    with tab5: # SETTINGS
-        st.header("👁️ View Settings")
-        stored_vis = r.get("visible_distances")
-        default_vis = all_distances if not stored_vis else json.loads(stored_vis)
-        visible_list = [d for d in all_distances if st.checkbox(d, value=(d in default_vis), key=f"vc_{d}")]
-        stored_mode = r.get("age_mode") or "10Y"
-        age_choice = st.radio("Age Grouping:", ["10 Years", "5 Years"], index=0 if stored_mode == "10Y" else 1)
-        if st.button("Save View Controller Settings"):
-            r.set("visible_distances", json.dumps(visible_list))
-            r.set("age_mode", "10Y" if "10" in age_choice else "5Y"); st.success("Saved!")
         st.divider()
-        if st.button("🗑️ Wipe All Results Database"):
-            if st.checkbox("Verify results wipe?"): r.delete("race_results"); st.rerun()
+        st.markdown("### 🛠️ Maintenance")
+        if st.button("🧹 Run Deduplication (None-Safe)"):
+            old, new = run_database_deduplication()
+            st.success(f"Cleaned {old-new} records."); st.rerun()
+            
+        st.error("Danger Zone")
+        if st.button("🗑️ Wipe All Race Results"):
+            if st.checkbox("Confirm Wipe?"): r.delete("race_results"); st.rerun()
+
 else:
     for t in [tab2, tab3, tab4, tab5]:
-        with t: st.warning("🔒 Admin Login Required.")
+        with t: st.warning("🔒 Enter password in sidebar to manage club data.")
