@@ -172,7 +172,7 @@ with tab4:
         if st.button("👥 Wipe All Members"): r.delete("members"); st.rerun()
     else:
         st.warning("🔒 Please login via sidebar to access Admin Tools.")
-
+ 
 # --- TAB 5: VIEW CONTROLLER ---
 with tab5:
     if is_admin:
