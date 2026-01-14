@@ -171,60 +171,91 @@ if is_admin:
                 if st.button("❌ Reject", key=f"rej_{i}"):
                     r.lrem("pending_results", 1, p_json); st.rerun()
 
-    with tab3: # RACE LOG
+    with tab3: # RACE LOG (Refactored for Precise Deletion)
         st.subheader("📋 Manage Race History")
         search_q = st.text_input("🔍 Filter by Name")
-        if raw_res:
-            res_df = pd.DataFrame([json.loads(res) for res in raw_res])
-            if search_q: res_df = res_df[res_df['name'].str.contains(search_q, case=False)]
+        
+        # Get RAW results to keep track of their actual database index
+        raw_db_results = r.lrange("race_results", 0, -1)
+        
+        if raw_db_results:
+            # We create a list of tuples: (original_json_string, index_in_redis)
+            indexed_data = []
+            for idx, item in enumerate(raw_db_results):
+                indexed_data.append((json.loads(item), item, idx))
             
-            st.download_button("📥 Export to CSV", res_df.to_csv(index=False), "race_history.csv")
+            # Filter based on search
+            if search_q:
+                indexed_data = [x for x in indexed_data if search_q.lower() in x[0]['name'].lower()]
             
-            for i, row in res_df.iterrows():
-                # Fix: State key must be different from button key
-                state_key = f"edit_active_{i}"
+            # Export data
+            export_df = pd.DataFrame([x[0] for x in indexed_data])
+            st.download_button("📥 Export to CSV", export_df.to_csv(index=False), "race_history.csv")
+            
+            for entry_dict, original_json, redis_index in indexed_data:
+                state_key = f"edit_active_{redis_index}"
+                
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([3, 1, 1])
-                    c1.write(f"**{row['name']}** | {row['distance']} | {row['time_display']} | {row['race_date']}")
-                    if c2.button("📝 Edit", key=f"btn_re_ed_{i}"): 
+                    c1.write(f"**{entry_dict['name']}** | {entry_dict['distance']} | {entry_dict['time_display']} | {entry_dict['race_date']}")
+                    
+                    if c2.button("📝 Edit", key=f"btn_re_ed_{redis_index}"): 
                         st.session_state[state_key] = True
-                    if c3.button("🗑️", key=f"btn_re_del_{i}"): 
-                        r.lrem("race_results", 1, json.dumps(row.to_dict())); st.rerun()
+                    
+                    # PRECISE DELETION: Use the index placeholder to avoid string mismatch
+                    if c3.button("🗑️", key=f"btn_re_del_{redis_index}"):
+                        # Use a temporary unique marker to ensure we delete exactly this row
+                        r.lset("race_results", redis_index, "DELETE_ME")
+                        r.lrem("race_results", 1, "DELETE_ME")
+                        st.rerun()
                     
                     if st.session_state.get(state_key):
-                        with st.form(f"f_re_ed_{i}"):
-                            new_t = st.text_input("New Time", row['time_display'])
-                            new_d = st.text_input("New Date", row['race_date'])
+                        with st.form(f"f_re_ed_{redis_index}"):
+                            new_t = st.text_input("New Time", entry_dict['time_display'])
+                            new_d = st.text_input("New Date", entry_dict['race_date'])
+                            new_dist = st.selectbox("New Distance", all_distances, index=all_distances.index(entry_dict['distance']) if entry_dict['distance'] in all_distances else 0)
+                            
                             if st.form_submit_button("Update"):
-                                r.lrem("race_results", 1, json.dumps(row.to_dict()))
-                                row['time_display'], row['race_date'] = new_t, new_d
-                                row['time_seconds'] = time_to_seconds(new_t)
-                                r.rpush("race_results", json.dumps(row.to_dict()))
+                                # 1. Create the new version
+                                entry_dict['time_display'] = format_time_string(new_t)
+                                entry_dict['time_seconds'] = time_to_seconds(new_t)
+                                entry_dict['race_date'] = str(new_d)
+                                entry_dict['distance'] = new_dist
+                                
+                                # 2. Overwrite the exact index in Redis
+                                r.lset("race_results", redis_index, json.dumps(entry_dict))
+                                
                                 st.session_state[state_key] = False
+                                st.success("Updated!")
                                 st.rerun()
 
     with tab4: # MEMBERS
         st.subheader("👥 Member Management")
-        for i, m in enumerate(members_data):
-            # Fix: Unique state key for member editing
-            m_state_key = f"m_edit_active_{i}"
+        raw_db_members = r.lrange("members", 0, -1)
+        for idx, m_json in enumerate(raw_db_members):
+            m = json.loads(m_json)
+            m_state_key = f"m_edit_active_{idx}"
+            
             with st.container(border=True):
                 c1, c2, c3 = st.columns([3, 1, 1])
                 c1.write(f"**{m['name']}** ({m.get('status', 'Active')})")
-                if c2.button("Toggle Status", key=f"btn_m_st_{i}"):
-                    r.lrem("members", 1, json.dumps(m))
+                
+                if c2.button("Toggle Status", key=f"btn_m_st_{idx}"):
                     m['status'] = "Left" if m.get('status', 'Active') == "Active" else "Active"
-                    r.rpush("members", json.dumps(m)); st.rerun()
-                if c3.button("📝 Edit", key=f"btn_m_ed_{i}"): 
+                    r.lset("members", idx, json.dumps(m))
+                    st.rerun()
+                    
+                if c3.button("📝 Edit", key=f"btn_m_ed_{idx}"): 
                     st.session_state[m_state_key] = True
                 
                 if st.session_state.get(m_state_key):
-                    with st.form(f"f_m_ed_{i}"):
-                        new_dob = st.text_input("New DOB (YYYY-MM-DD)", m.get('dob', ''))
-                        if st.form_submit_button("Save DOB"):
-                            r.lrem("members", 1, json.dumps(m))
+                    with st.form(f"f_m_ed_{idx}"):
+                        new_name = st.text_input("Name", m['name'])
+                        new_dob = st.text_input("DOB (YYYY-MM-DD)", m.get('dob', ''))
+                        if st.form_submit_button("Save"):
+                            m['name'] = new_name
                             m['dob'] = new_dob
-                            r.rpush("members", json.dumps(m))
+                            r.lset("members", idx, json.dumps(m))
                             st.session_state[m_state_key] = False
                             st.rerun()
 
