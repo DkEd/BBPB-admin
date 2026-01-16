@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import pandas as pd
+from datetime import datetime
 from helpers import get_redis, get_club_settings, get_category, format_time_string
 
 st.set_page_config(page_title="Champ Management", layout="wide")
@@ -13,7 +14,8 @@ if not st.session_state.get('authenticated'):
 
 st.header("🏅 Championship Management")
 
-tabs = st.tabs(["📥 Pending Approvals", "🗓️ Calendar Setup", "📊 Championship Log"])
+# Updated to include the Leaderboard tab
+tabs = st.tabs(["📥 Pending Approvals", "🗓️ Calendar Setup", "📊 Championship Log", "🏆 Leaderboard"])
 
 # --- HELPERS ---
 def get_seconds(t_str):
@@ -86,25 +88,37 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("15-Race Calendar Setup")
     cal_raw = r.get("champ_calendar_2026")
-    # Updated to include 'terrain' in default initialization
-    current_cal = json.loads(cal_raw) if cal_raw else [{"name": "TBC", "date": "2026-01-01", "distance": "TBC", "terrain": "Road"} for _ in range(15)]
+    current_cal = json.loads(cal_raw) if cal_raw else [{"name": "TBC", "date": "2026-01-01", "distance": "5k", "terrain": "Road"} for _ in range(15)]
     
     with st.form("cal_form"):
         updated_cal = []
+        track_distances = ["5k", "10k", "10 Mile", "HM", "Marathon", "TBC"]
+        
         for i in range(15):
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
             n = c1.text_input(f"Race {i+1}", current_cal[i]['name'], key=f"n_{i}")
-            d = c2.text_input("Date", current_cal[i]['date'], key=f"d_{i}")
-            dist = c3.text_input("Dist", current_cal[i].get('distance', 'TBC'), key=f"dist_cal_{i}")
-            # New Terrain Input
-            terr = c4.selectbox("Terrain", ["Road", "Trail", "Fell", "XC"], 
-                                index=["Road", "Trail", "Fell", "XC"].index(current_cal[i].get('terrain', 'Road')), 
-                                key=f"terr_{i}")
-            updated_cal.append({"name": n, "date": d, "distance": dist, "terrain": terr})
+            
+            try:
+                curr_date = datetime.strptime(current_cal[i]['date'], '%Y-%m-%d')
+            except:
+                curr_date = datetime(2026, 1, 1)
+            d = c2.date_input("Date", value=curr_date, key=f"d_{i}")
+            
+            curr_dist = current_cal[i].get('distance', '5k')
+            dist_idx = track_distances.index(curr_dist) if curr_dist in track_distances else 0
+            dist = c3.selectbox("Dist", track_distances, index=dist_idx, key=f"dist_cal_{i}")
+            
+            curr_terr = current_cal[i].get('terrain', 'Road')
+            terr_opts = ["Road", "Trail", "Fell", "XC"]
+            terr_idx = terr_opts.index(curr_terr) if curr_terr in terr_opts else 0
+            terr = c4.selectbox("Terrain", terr_opts, index=terr_idx, key=f"terr_{i}")
+            
+            updated_cal.append({"name": n, "date": str(d), "distance": dist, "terrain": terr})
         
-        if st.form_submit_button("Save Calendar"):
+        if st.form_submit_button("Save 2026 Calendar"):
             r.set("champ_calendar_2026", json.dumps(updated_cal))
             st.success("Calendar Saved!")
+            st.rerun()
 
 # --- TAB 3: CHAMPIONSHIP LOG ---
 with tabs[2]:
@@ -120,3 +134,20 @@ with tabs[2]:
                 st.rerun()
     else:
         st.info("No approved results yet.")
+
+# --- TAB 4: LEADERBOARD (Admin View) ---
+with tabs[3]:
+    st.subheader("Current Standings (Best 6)")
+    final_raw = r.lrange("champ_results_final", 0, -1)
+    if final_raw:
+        c_df = pd.DataFrame([json.loads(x) for x in final_raw])
+        c_df = c_df.sort_values(['name', 'points'], ascending=[True, False])
+        
+        # Best 6 Logic
+        c_df['rank'] = c_df.groupby('name').cumcount() + 1
+        league = c_df[c_df['rank'] <= 6].groupby('name')['points'].sum().reset_index()
+        league.columns = ['Runner', 'Total Points']
+        
+        st.table(league.sort_values('Total Points', ascending=False).reset_index(drop=True))
+    else:
+        st.info("No scores recorded yet.")
