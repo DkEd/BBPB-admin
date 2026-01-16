@@ -11,7 +11,7 @@ def get_club_settings():
     r = get_redis()
     return {
         "age_mode": r.get("age_mode") or "10Y",
-        "logo_url": r.get("logo_url") or "",
+        "club_logo_url": r.get("logo_url") or "",
         "admin_password": r.get("admin_password") or "admin123",
         "show_champ_tab": r.get("show_champ_tab") or "False"
     }
