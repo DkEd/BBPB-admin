@@ -1,37 +1,24 @@
 import streamlit as st
 import pandas as pd
 import json
-from helpers import get_redis, format_time_string, time_to_seconds
+from helpers import get_redis
 
-st.set_page_config(layout="wide")
 r = get_redis()
-
-if not st.session_state.get('authenticated'):
-    st.error("Please login on the Home page.")
-    st.stop()
+if not st.session_state.get('authenticated'): st.stop()
 
 st.header("⚙️ System Tools")
-
 # Age Mode
-curr_mode = r.get("age_mode") or "10Y"
-new_mode = st.radio("Age Category Mode", ["10Y", "5Y"], index=0 if curr_mode=="10Y" else 1)
-if st.button("Save Age Mode"):
-    r.set("age_mode", new_mode)
-    st.success("Mode updated.")
+mode = r.get("age_mode") or "10Y"
+new_mode = st.radio("Age Mode", ["10Y", "5Y"], index=0 if mode=="10Y" else 1)
+if st.button("Save Age Mode"): r.set("age_mode", new_mode)
 
 st.divider()
-
-# Downloads
-st.subheader("💾 Backups")
-if st.button("Generate Download Links"):
-    res_df = pd.DataFrame([json.loads(x) for x in r.lrange("race_results", 0, -1)])
-    st.download_button("📥 Download All PBs (CSV)", res_df.to_csv(index=False), "all_pbs.csv")
+# Exports
+if st.button("Generate PB Backup"):
+    df = pd.DataFrame([json.loads(x) for x in r.lrange("race_results", 0, -1)])
+    st.download_button("Download CSV", df.to_csv(index=False), "pb_backup.csv")
 
 st.divider()
-
-# Password Reset
-st.subheader("🔑 Security")
+# Password
 new_pwd = st.text_input("New Admin Password", type="password")
-if st.button("Change Password"):
-    r.set("admin_password", new_pwd)
-    st.success("Password changed.")
+if st.button("Update Password"): r.set("admin_password", new_pwd); st.success("Updated")
