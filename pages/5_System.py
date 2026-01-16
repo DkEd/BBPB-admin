@@ -3,8 +3,18 @@ import pandas as pd
 import json
 from helpers import get_redis, get_club_settings
 
+# Page Config
+st.set_page_config(page_title="System Tools", layout="wide")
+
 r = get_redis()
-if not st.session_state.get('authenticated'): st.stop()
+
+# --- PERSISTENT URL-BASED AUTHENTICATION ---
+if st.query_params.get("access") == "granted":
+    st.session_state['authenticated'] = True
+
+if not st.session_state.get('authenticated'):
+    st.warning("Please login on the Home page to access this section.")
+    st.stop()
 
 settings = get_club_settings()
 
@@ -19,10 +29,10 @@ if st.button("Save Age Mode"):
 
 st.divider()
 
-# Logo URL
+# Logo URL - Updated to use the correct Redis key: club_logo_url
 new_logo = st.text_input("Logo URL", value=settings['logo_url'])
 if st.button("Update Logo"):
-    r.set("logo_url", new_logo)
+    r.set("club_logo_url", new_logo)
     st.success("Logo Updated")
 
 st.divider()
