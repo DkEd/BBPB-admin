@@ -50,9 +50,8 @@ for i, m in enumerate(mems):
     if search and search not in m['name'].lower():
         continue
         
-    # Small, concise row using an expander for editing
-    status_color = "🟢" if m.get('status') == "Active" else "🔴"
-    with st.expander(f"{status_color} {m['name']} ({m['gender']})"):
+    # Removed the status color emoji from the label
+    with st.expander(f"{m['name']} ({m['gender']})"):
         with st.form(f"edit_{i}"):
             c1, c2, c3 = st.columns(3)
             
