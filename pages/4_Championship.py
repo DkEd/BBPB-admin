@@ -3,8 +3,18 @@ import json
 import pandas as pd
 from helpers import get_redis, time_to_seconds, get_category
 
+# Page Config
+st.set_page_config(page_title="Championship Admin", layout="wide")
+
 r = get_redis()
-if not st.session_state.get('authenticated'): st.stop()
+
+# --- PERSISTENT URL-BASED AUTHENTICATION ---
+if st.query_params.get("access") == "granted":
+    st.session_state['authenticated'] = True
+
+if not st.session_state.get('authenticated'):
+    st.warning("Please login on the Home page to access this section.")
+    st.stop()
 
 st.header("🏅 Championship Admin")
 tabs = st.tabs(["🗓️ Calendar Editor", "⏱️ Set Category Winners", "📥 Point Approvals", "📊 Final Log"])
